@@ -1,0 +1,50 @@
+   Compiling putty-ai-broker v0.1.0 (C:\PuTTY-MCP\putty\putty-ai-rs\broker)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.77s
+     Running unittests src\main.rs (target\debug\deps\putty_ai_broker-4f7a2656a38db417.exe)
+
+running 12 tests
+test tests::lease_expiry_and_local_revoke ... ok
+test tests::output_permission_and_cursor_bounds ... ok
+test tests::timeout_never_fakes_exit_or_unlocks_shell ... ok
+test tests::lease_expiry_does_not_discard_running_task_observation ... ok
+test tests::custom_mode_requires_separate_native_authorization ... ok
+test tests::isolation_allowlist_and_idempotency ... ok
+test tests::output_loss_is_unknown ... ok
+test tests::rejected_control_ack_clears_pending_client_and_deadline ... ok
+test tests::cancellation_does_not_claim_remote_termination ... ok
+test tests::close_and_adapter_failure ... ok
+test tests::custom_text_remains_bounded_and_rejects_terminal_controls ... ok
+test tests::incremental_marker_large_output_and_echo ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\e2e.rs (target\debug\deps\e2e-5d9c23653f82d351.exe)
+
+running 1 test
+PERF {"MiB_per_second":425.9283907892986,"broker_cpu_seconds":0.3125,"broker_peak_working_set_bytes":52436992,"bytes":83886080,"kind":"simulated_native_real_windows_named_pipe","seconds":0.187825,"sessions":20}
+test real_windows_pipes_twenty_sessions_and_faults ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.85s
+
+     Running unittests src\lib.rs (target\debug\deps\putty_ai_common-e39e90a80306b6a1.exe)
+
+running 4 tests
+test terminal::tests::utf8_and_controls ... ok
+test terminal::tests::gaps_and_eviction ... ok
+test terminal::tests::utf8_split_between_callbacks ... ok
+test protocol::tests::roundtrip_and_limits ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\main.rs (target\debug\deps\putty_ai_mcp-d6554544f47f21b9.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests putty_ai_common
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

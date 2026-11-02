@@ -1,0 +1,18 @@
+[
+  {
+    "name": "putty",
+    "enabled": true,
+    "disabled_reason": null,
+    "transport": {
+      "type": "stdio",
+      "command": "C:\\PuTTY-MCP\\putty\\dist\\putty-ai-x64\\putty-ai-mcp.exe",
+      "args": [],
+      "env": null,
+      "env_vars": [],
+      "cwd": null
+    },
+    "startup_timeout_sec": 10.0,
+    "tool_timeout_sec": 10.0,
+    "auth_status": "unsupported"
+  }
+]

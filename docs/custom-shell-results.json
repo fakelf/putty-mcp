@@ -1,0 +1,12 @@
+{
+  "passed": true,
+  "checks": [
+    "single_quote",
+    "pipe",
+    "multiline_utf8",
+    "script_and_redirect",
+    "nonzero",
+    "control_and_length_rejection"
+  ],
+  "scope": "Exact C wrapper executed by local POSIX shell; no remote SSH or server deployment."
+}

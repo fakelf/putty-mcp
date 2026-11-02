@@ -1,0 +1,15 @@
+/build-*/
+/baseline-source/
+/dist/
+/putty-ai-rs/target/
+/node_modules/
+/.tools/
+/.github-publish/
+.env
+.env.*
+*.exe
+*.pdb
+*.ilk
+*.obj
+*.log
+__pycache__/

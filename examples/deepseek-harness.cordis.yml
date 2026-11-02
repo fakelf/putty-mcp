@@ -1,0 +1,12 @@
+# DeepSeek Harness --patch overlay. Generate the actual local executable path
+# with scripts/generate-client-config.ps1 -Format deepseek -OutputPath FILE.
+- insert:
+    - id: putty-mcp-local
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: putty
+        transport: stdio
+        command: 'C:\PuTTY-AI\putty-ai-mcp.exe'
+        args: []
+        env: {}
+        toolCallTimeoutMs: 10000

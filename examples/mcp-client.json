@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "putty": {
+      "command": "C:\\PuTTY-AI\\putty-ai-mcp.exe",
+      "args": []
+    }
+  }
+}

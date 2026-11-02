@@ -1,0 +1,9 @@
+{
+  "passed": true,
+  "first_powershell_exit_ms": 2165.2443000000003,
+  "checks": [
+    "Windows PowerShell exits after initial Broker autostart",
+    "independent Broker remains reachable by a second adapter"
+  ],
+  "scope": "Run after isolated tests when no v2 Broker exists; leaves its idle Broker running."
+}

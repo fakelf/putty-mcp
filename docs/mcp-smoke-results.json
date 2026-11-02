@@ -1,0 +1,20 @@
+{
+  "passed": true,
+  "checks": [
+    "MCP initialize, seven tools, JSON schemas, two real stdio adapters",
+    "actual C bridge registration and output through broker and MCP; incremental cursors",
+    "production automatically opens control consent; rejecting it clears the broker pending lock and permits a new client",
+    "real modeless consent remains pending while native terminal event ticks continue",
+    "lease bound to MCP connection; immediate task submission; C bridge markers and completion",
+    "human activity revokes control",
+    "custom requires separate local grant, permits ip/pipes/UTF-8 scripts, rejects terminal controls; human input cancels pending command",
+    "native ring overflow discloses missing bytes without waiting for MCP",
+    "broker killed: native GUI heartbeat survives; native and MCP reconnect without remote reconnection",
+    "MCP adapter crash does not interrupt another reader or native output",
+    "disable closes IPC, rejects old identity; re-enable creates a new random identity"
+  ],
+  "submit_ms": 0.23519999999996344,
+  "native_event_loop_ping_ms_while_broker_offline": 0.38199999999983447,
+  "native_dropped_bytes": 14581760,
+  "note": "synthetic frontend auto-approves synthetic commands; no SSH/bastion/real remote command used"
+}

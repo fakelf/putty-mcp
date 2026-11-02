@@ -1,0 +1,18 @@
+{
+  "passed": true,
+  "adapter": "C:\\PuTTY-MCP\\putty\\dist\\putty-ai-v2-fixed-x64\\putty-ai-mcp.exe",
+  "protocol_version": "2025-03-26",
+  "tools": [
+    "acquire_control",
+    "cancel_task",
+    "get_task_status",
+    "list_sessions",
+    "read_terminal",
+    "release_control",
+    "submit_command"
+  ],
+  "session_count": 0,
+  "sessions": [],
+  "terminal_content_read": false,
+  "remote_input_sent": false
+}

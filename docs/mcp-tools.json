@@ -1,0 +1,190 @@
+{
+  "tools": [
+    {
+      "name": "acquire_control",
+      "description": "Request diagnostic or custom shell control. Custom mode permits commands that can modify the server and requires separate local approval. Each command still requires local confirmation. Lease lasts at most 60 seconds.",
+      "inputSchema": {
+        "$defs": {
+          "Mode": {
+            "enum": [
+              "diagnostic",
+              "custom"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "requested_mode": {
+            "$ref": "#/$defs/Mode"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "requested_mode"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "name": "cancel_task",
+      "description": "Request cancellation of a pending local command. Already sent commands may continue; no Ctrl+C is sent.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "task_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "name": "get_task_status",
+      "description": "Query task and incremental transcript. Unknown or timeout never implies remote termination. Exit status uses cooperative shell markers, not a remote exec API.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "max_output_bytes": {
+            "format": "uint32",
+            "maximum": 8192,
+            "minimum": 4,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "output_cursor": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "task_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "list_sessions",
+      "description": "List locally authorized PuTTY sessions. Connection host is not a verified final target.",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "read_terminal",
+      "description": "Read incremental untrusted terminal transcript. Controls are escaped. This is not a screen snapshot. Raw byte cursor; max 8192 input bytes.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max_bytes": {
+            "format": "uint32",
+            "maximum": 8192,
+            "minimum": 4,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "release_control",
+      "description": "Revoke this client's PuTTY control lease without sending remote input.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "name": "submit_command",
+      "description": "Queue shell text and return immediately. Diagnostic mode allows five templates. Arbitrary shell text (2048 UTF-8 bytes maximum) requires a custom lease and local approval of the complete command in the intended idle POSIX shell. No automatic retry of unknown tasks.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "command": {
+            "description": "Shell text up to 2048 UTF-8 bytes. Diagnostic mode allows five exact templates; other commands require a separately approved custom lease and local confirmation of the complete text.",
+            "maxLength": 2048,
+            "minLength": 1,
+            "type": "string"
+          },
+          "execution_timeout_ms": {
+            "format": "uint32",
+            "maximum": 3600000,
+            "minimum": 1000,
+            "type": "integer"
+          },
+          "request_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "command",
+          "execution_timeout_ms",
+          "request_id"
+        ],
+        "type": "object"
+      }
+    }
+  ]
+}

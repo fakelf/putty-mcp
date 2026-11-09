@@ -794,6 +794,8 @@ static bool ssh2_connection_filter_queue(struct ssh2_connection_state *s)
                 break;
 
               case SSH2_MSG_CHANNEL_CLOSE:
+                if (!(c->closes & CLOSES_RCVD_CLOSE) && c->chan->vt->remote_close)
+                    c->chan->vt->remote_close(c->chan);
                 /*
                  * When we receive CLOSE on a channel, we assume it
                  * comes with an implied EOF if we haven't seen EOF

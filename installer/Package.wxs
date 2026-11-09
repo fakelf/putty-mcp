@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="PuTTY MCP" Manufacturer="PuTTY MCP Project" Version="4.4.0" Codepage="936" Language="2052"
+           UpgradeCode="{30CB83D3-CB8B-48BE-B428-6C9DF5983F1A}" Scope="perUser">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of PuTTY MCP is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+    <Icon Id="PuTTYIcon" SourceFile="$(var.Payload)\putty.exe" />
+    <Property Id="ARPPRODUCTICON" Value="PuTTYIcon" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="UserProgramsFolder" Name="Programs">
+        <Directory Id="InstallFolder" Name="PuTTY MCP">
+          <Component Id="Runtime" Guid="{CF1AB312-CC92-49EC-9B94-CF0353AE38AE}">
+            <RegistryValue Root="HKCU" Key="Software\PuTTY MCP" Name="InstallPath"
+                           Value="[InstallFolder]" Type="string" KeyPath="yes" />
+            <File Source="$(var.Payload)\putty.exe" />
+            <File Source="$(var.Payload)\putty-ai-mcp.exe" />
+            <File Source="$(var.Payload)\LICENCE" />
+            <File Source="$(var.Payload)\START_HERE.md" />
+            <File Source="$(var.Payload)\README-AI.md" />
+            <File Source="$(var.Payload)\FEED_TO_DEEPSEEK.txt" />
+            <File Source="$(var.Payload)\SHA256.json" />
+            <RemoveFolder Id="RemoveInstallFolder" On="uninstall" />
+            <RemoveFolder Id="RemoveUserProgramsFolder" Directory="UserProgramsFolder" On="uninstall" />
+          </Component>
+          <Directory Id="ScriptsFolder" Name="scripts">
+            <Component Id="Scripts" Guid="{61216449-9869-4A9E-932C-C932CC7514C3}">
+              <RegistryValue Root="HKCU" Key="Software\PuTTY MCP" Name="Scripts" Type="integer" Value="1" KeyPath="yes" />
+              <File Source="$(var.Payload)\scripts\connection-assistant.ps1" />
+              <File Source="$(var.Payload)\scripts\check-mcp.ps1" />
+              <File Source="$(var.Payload)\scripts\generate-client-config.ps1" />
+              <File Source="$(var.Payload)\scripts\install-mcp.ps1" />
+              <RemoveFolder Id="RemoveScriptsFolder" On="uninstall" />
+            </Component>
+          </Directory>
+          <Directory Id="DocsFolder" Name="docs">
+            <Component Id="Documentation" Guid="{47C1FED9-0C70-4D21-9A50-C563B0208DB7}">
+              <RegistryValue Root="HKCU" Key="Software\PuTTY MCP" Name="Docs" Type="integer" Value="1" KeyPath="yes" />
+              <File Source="$(var.Payload)\docs\qwenpaw.md" />
+              <File Source="$(var.Payload)\docs\ai-integration.md" />
+              <File Source="$(var.Payload)\docs\installation.md" />
+              <File Source="$(var.Payload)\docs\deepseek-harness.md" />
+              <File Source="$(var.Payload)\docs\architecture.md" />
+              <File Source="$(var.Payload)\docs\test-report.md" />
+              <File Source="$(var.Payload)\docs\live-validation.md" />
+              <File Source="$(var.Payload)\docs\known-limitations.md" />
+              <File Source="$(var.Payload)\docs\mcp-tools.json" />
+              <File Source="$(var.Payload)\docs\third-party-licenses.txt" />
+              <RemoveFolder Id="RemoveDocsFolder" On="uninstall" />
+            </Component>
+          </Directory>
+          <Directory Id="ExamplesFolder" Name="examples">
+            <Component Id="Examples" Guid="{46470933-482D-448A-A15A-98C4269AB420}">
+              <RegistryValue Root="HKCU" Key="Software\PuTTY MCP" Name="Examples" Type="integer" Value="1" KeyPath="yes" />
+              <File Source="$(var.Payload)\examples\config.toml" />
+              <File Source="$(var.Payload)\examples\deepseek-harness.cordis.yml" />
+              <File Source="$(var.Payload)\examples\mcp-client.json" />
+              <RemoveFolder Id="RemoveExamplesFolder" On="uninstall" />
+            </Component>
+          </Directory>
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="StartMenu" Guid="{BDA9D715-6BF2-442B-907D-D433A2751E9F}">
+        <Shortcut Id="ConnectionAssistant" Name="PuTTY MCP 连接助手"
+                  Target="[System64Folder]WindowsPowerShell\v1.0\powershell.exe"
+                  Arguments="-NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File &quot;[InstallFolder]scripts\connection-assistant.ps1&quot;"
+                  WorkingDirectory="InstallFolder" Icon="PuTTYIcon" />
+        <RegistryValue Root="HKCU" Key="Software\PuTTY MCP" Name="StartMenu" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+    <Feature Id="Application" Title="PuTTY MCP" Level="1">
+      <ComponentRef Id="Runtime" />
+      <ComponentRef Id="Scripts" />
+      <ComponentRef Id="Documentation" />
+      <ComponentRef Id="Examples" />
+      <ComponentRef Id="StartMenu" />
+    </Feature>
+  </Package>
+</Wix>

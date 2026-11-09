@@ -23,7 +23,7 @@ impl Audit {
             std::env::var_os("LOCALAPPDATA")
                 .ok_or_else(|| anyhow::anyhow!("LOCALAPPDATA unavailable"))?,
         )
-        .join("PuTTY-AI-v2");
+        .join("PuTTY-AI-v4.4.0");
         std::fs::create_dir_all(&dir)?;
         putty_ai_common::security::restrict_path(&dir)?;
         let path = dir.join("audit.jsonl");

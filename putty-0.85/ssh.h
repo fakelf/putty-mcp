@@ -407,6 +407,9 @@ LogContext *ssh_get_logctx(Ssh *ssh);
 /* Communications back to ssh.c from connection layers */
 void ssh_throttle_conn(Ssh *ssh, int adjust);
 void ssh_got_exitcode(Ssh *ssh, int status);
+void ssh_set_authenticated_username(Ssh *ssh, const char *username);
+ConnectionLayer *ssh_task_connection(Backend *be, const char **host,
+                                    int *port, const char **user);
 void ssh_ldisc_update(Ssh *ssh);
 void ssh_check_sendok(Ssh *ssh);
 void ssh_got_fallback_cmd(Ssh *ssh);

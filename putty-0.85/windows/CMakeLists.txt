@@ -118,6 +118,8 @@ option(PUTTY_AI_BRIDGE "Build optional local PuTTY AI bridge (runtime default OF
 if(PUTTY_AI_BRIDGE)
   target_compile_definitions(putty PRIVATE PUTTY_AI_BRIDGE)
   target_sources(putty PRIVATE
+    ai-child.c
+    ai-top.c
     ${CMAKE_SOURCE_DIR}/ai_bridge/bridge.c
     ${CMAKE_SOURCE_DIR}/ai_bridge/approval.c
     ${CMAKE_SOURCE_DIR}/ai_bridge/command.c

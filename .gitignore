@@ -1,10 +1,13 @@
 /build-*/
+/.build-tools/
 /baseline-source/
+/backups/
 /dist/
 /putty-ai-rs/target/
 /node_modules/
 /.tools/
 /.github-publish/
+/.test-codex*/
 .env
 .env.*
 *.exe

@@ -6,6 +6,7 @@ typedef struct Approval {
     int finished;
     int initialized;
     const char *text;
+    const char *approve_label;
 } Approval;
 static const wchar_t property[]=L"PuTTY.AI.Approval";
 void ai_bridge_cancel_approval(HWND owner)
@@ -30,7 +31,7 @@ static LRESULT CALLBACK approval_window(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp)
             ES_MULTILINE|ES_READONLY|ES_AUTOVSCROLL,18,16,644,360,hwnd,(HMENU)3,GetModuleHandle(NULL),NULL);
         if (!edit) return -1;
         SendMessage(edit,WM_SETFONT,(WPARAM)GetStockObject(DEFAULT_GUI_FONT),TRUE);
-        CreateWindowA("BUTTON","Approve",WS_CHILD|WS_VISIBLE|WS_TABSTOP,440,396,100,32,hwnd,(HMENU)1,GetModuleHandle(NULL),NULL);
+        CreateWindowA("BUTTON",a->approve_label,WS_CHILD|WS_VISIBLE|WS_TABSTOP,440,396,100,32,hwnd,(HMENU)1,GetModuleHandle(NULL),NULL);
         button=CreateWindowA("BUTTON","Reject",WS_CHILD|WS_VISIBLE|WS_TABSTOP,558,396,100,32,hwnd,(HMENU)2,GetModuleHandle(NULL),NULL);
         SetFocus(button); return 0;
     }
@@ -50,6 +51,7 @@ static LRESULT CALLBACK approval_window(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp)
     return DefWindowProc(hwnd,msg,wp,lp);
 }
 HWND ai_approval_open(HWND owner,const char *title,const char *text,
+                      const char *approve_label,
                       void (*complete)(void *,int),void *context)
 {
     WNDCLASSA wc; Approval initial, *a; HWND hwnd; RECT rect;
@@ -60,7 +62,8 @@ HWND ai_approval_open(HWND owner,const char *title,const char *text,
     wc.hCursor=LoadCursor(NULL,IDC_ARROW); wc.hbrBackground=(HBRUSH)(COLOR_BTNFACE+1);
     if (!RegisterClassA(&wc) && GetLastError()!=ERROR_CLASS_ALREADY_EXISTS) return NULL;
     ZeroMemory(&initial,sizeof(initial));
-    initial.owner=owner; initial.complete=complete; initial.context=context; initial.text=text;
+    initial.owner=owner; initial.complete=complete; initial.context=context;
+    initial.text=text; initial.approve_label=approve_label;
     GetWindowRect(owner,&rect);
     hwnd=CreateWindowExA(WS_EX_DLGMODALFRAME|WS_EX_TOOLWINDOW,wc.lpszClassName,title,
         WS_POPUP|WS_CAPTION|WS_SYSMENU,rect.left+40,rect.top+40,700,485,owner,NULL,wc.hInstance,&initial);

@@ -1,4 +1,4 @@
-# Verified against local codex-cli 0.166.0-alpha.5.1 and official documentation.
+# Codex stdio MCP configuration. Write tools use explicit prompt policies below.
 # Replace command with the absolute path to the packaged executable.
 [mcp_servers.putty]
 command = 'C:\PuTTY-AI\putty-ai-mcp.exe'
@@ -6,11 +6,9 @@ enabled = true
 required = false
 startup_timeout_sec = 10
 tool_timeout_sec = 10
-enabled_tools = ["list_sessions", "read_terminal", "acquire_control", "submit_command", "get_task_status", "cancel_task", "release_control"]
-default_tools_approval_mode = "writes"
-
-[mcp_servers.putty.tools.acquire_control]
-approval_mode = "prompt"
+env = { PUTTY_MCP_SOURCE = "Codex" }
+enabled_tools = ["list_sessions", "read_terminal", "submit_command", "get_task_status", "cancel_task", "interrupt_task", "start_interactive", "read_task_screen", "request_task_action", "open_child_session", "close_child_session", "attach_terminal"]
+default_tools_approval_mode = "auto"
 
 [mcp_servers.putty.tools.submit_command]
 approval_mode = "prompt"
@@ -18,6 +16,21 @@ approval_mode = "prompt"
 [mcp_servers.putty.tools.cancel_task]
 approval_mode = "prompt"
 
-[mcp_servers.putty.tools.release_control]
+[mcp_servers.putty.tools.interrupt_task]
+approval_mode = "prompt"
+
+[mcp_servers.putty.tools.start_interactive]
+approval_mode = "prompt"
+
+[mcp_servers.putty.tools.request_task_action]
+approval_mode = "prompt"
+
+[mcp_servers.putty.tools.open_child_session]
+approval_mode = "prompt"
+
+[mcp_servers.putty.tools.close_child_session]
+approval_mode = "prompt"
+
+[mcp_servers.putty.tools.attach_terminal]
 approval_mode = "prompt"
 

@@ -3525,6 +3525,29 @@ static strbuf *term_input_data_from_charset(
 
 }
 
+bool term_encode_mcp_text(Terminal *term, ptrlen utf8, strbuf *output)
+{
+    if (in_utf(term)) {
+        put_datapl(output, utf8);
+        return true;
+    }
+
+    /* Use the same encoding as real keyboard input, but reject lossy
+     * conversion instead of typing a modified version of the request. */
+    strbuf *wide = strbuf_new_nm(), *decoded = strbuf_new_nm();
+    put_mb_to_wc(wide, CP_UTF8, utf8.ptr, utf8.len);
+    strbuf *encoded = term_input_data_from_unicode(
+        term, (const wchar_t *)wide->s, wide->len / sizeof(wchar_t));
+    put_mb_to_wc(decoded, term->ucsdata->line_codepage, encoded->s, encoded->len);
+    bool exact = wide->len == decoded->len && !memcmp(wide->s, decoded->s, wide->len);
+    if (exact)
+        put_data(output, encoded->s, encoded->len);
+    strbuf_free(encoded);
+    strbuf_free(decoded);
+    strbuf_free(wide);
+    return exact;
+}
+
 static inline void term_bracketed_paste_start(Terminal *term)
 {
     ptrlen seq = PTRLEN_LITERAL("\033[200~");
@@ -6824,6 +6847,277 @@ void term_copyall(Terminal *term, const int *clipboards, int n_clipboards)
     clipme(term, top, bottom, false, true, clipboards, n_clipboards);
 }
 
+const wchar_t *term_copy_visible(Terminal *term, size_t *length)
+{
+    pos top = { .x = 0, .y = 0 };
+    pos bottom = { .x = term->cols, .y = term->rows - 1 };
+    const int clipboard = CLIP_LOCAL;
+    clipme(term, top, bottom, true, false, &clipboard, 1);
+    *length = term->last_selected_len;
+    if (*length && term->last_selected_text[*length - 1] == 0)
+        --*length;
+    return term->last_selected_text;
+}
+
+static unsigned terminal_cell_unicode(const Terminal *term, unsigned uc)
+{
+    switch (uc & CSET_MASK) {
+      case CSET_LINEDRW: uc = term->ucsdata->unitab_xterm[uc & 0xff]; break;
+      case CSET_ASCII: uc = term->ucsdata->unitab_line[uc & 0xff]; break;
+      case CSET_SCOACS: uc = term->ucsdata->unitab_scoacs[uc & 0xff]; break;
+    }
+    switch (uc & CSET_MASK) {
+      case CSET_ACP: return term->ucsdata->unitab_font[uc & 0xff];
+      case CSET_OEMCP: return term->ucsdata->unitab_oemcp[uc & 0xff];
+    }
+    return uc;
+}
+
+static bool prompt_space(unsigned uc)
+{
+    return uc == ' ' || (uc >= '\t' && uc <= '\r');
+}
+
+static bool terminal_blank_cell(const Terminal *term, const termchar *cell)
+{
+    return !cell->cc_next && prompt_space(terminal_cell_unicode(term, cell->chr));
+}
+
+static bool prompt_delimiter(char c)
+{
+    return c == '#' || c == '>' || c == '$' || c == '%';
+}
+
+static bool prompt_ascii_letter(char c)
+{
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+}
+
+static bool prompt_ascii_digit(char c)
+{
+    return c >= '0' && c <= '9';
+}
+
+static bool plausible_bracket_prompt(const char *text, size_t end)
+{
+    if (end < 2 || text[0] != '[')
+        return false;
+    size_t first = (text[1] == '*' || text[1] == '~') ? 2 : 1;
+    if (end - first < 2 ||
+        !(prompt_ascii_letter(text[first]) || prompt_ascii_digit(text[first])))
+        return false;
+
+    /* Comware-style feature views can include interface numbers such as
+     * GigabitEthernet1/0/1. A slash between letters instead suggests an
+     * interactive choice, e.g. [Y/N], and never qualifies. */
+    bool has_letter = false, feature_view = false;
+    for (size_t i = first; i < end; ++i) {
+        char c = text[i];
+        if (prompt_ascii_letter(c)) {
+            has_letter = true;
+        } else if (c == '-') {
+            feature_view = true;
+        } else if (c == '/' || c == ':') {
+            if (!feature_view || i + 1 == end ||
+                !prompt_ascii_digit(text[i - 1]) || !prompt_ascii_digit(text[i + 1]))
+                return false;
+        } else if (!prompt_ascii_digit(c) && c != '_' && c != '.') {
+            return false;
+        }
+    }
+    if (!has_letter)
+        return false;
+
+    static const char *const replies[] = {
+        "yes", "no", "ok", "cancel", "confirm", "continue",
+        "enter", "default", "abort", "retry", "ignore", "accept",
+    };
+    for (size_t i = 0; i < lenof(replies); ++i)
+        if (end - first == strlen(replies[i]) &&
+            !strnicmp(text + first, replies[i], end - first))
+            return false;
+    return true;
+}
+
+static bool plausible_prompt(const char *text, size_t length)
+{
+    if (!length)
+        return false;
+
+    size_t end = length - 1;
+    if (text[end] == ']') {
+        if (!plausible_bracket_prompt(text, end))
+            return false;
+    } else if (!prompt_delimiter(text[end]) || (length == 1 && text[0] == '>')) {
+        return false;
+    }
+    while (end && prompt_space((unsigned char)text[end - 1]))
+        --end;
+    if (end && text[end - 1] == ':')
+        return false;
+
+    static const char *const excluded[] = {
+        "password", "passphrase", "passcode", "login", "username",
+        "otp", "pin", "mfa", "token", "verification", "authentication",
+        "heredoc", "dquote", "quote", "cmdsubst",
+    };
+    for (size_t i = 0; i < end; ) {
+        if (prompt_delimiter(text[i]) && prompt_space((unsigned char)text[i + 1]))
+            return false; /* Text entered after an earlier prompt marker. */
+        if (!prompt_ascii_letter(text[i])) {
+            ++i;
+            continue;
+        }
+        size_t start = i;
+        do {
+            ++i;
+        } while (i < end && prompt_ascii_letter(text[i]));
+        size_t word_length = i - start;
+        for (size_t j = 0; j < lenof(excluded); ++j)
+            if (word_length == strlen(excluded[j]) &&
+                !strnicmp(text + start, excluded[j], word_length))
+                return false;
+    }
+    return true;
+}
+
+static size_t term_snapshot_cursor_line(Terminal *term, char *output, size_t capacity)
+{
+    if (!capacity || term->trusted || term->alt_which ||
+        !term->cursor_on || term->wrapnext || term->termstate != TOPLEVEL ||
+        term->utf8.state || bufchain_size(&term->inbuf) ||
+        term->curs.x <= 0 || term->curs.x >= term->cols ||
+        term->curs.y < 0 || term->curs.y >= term->rows)
+        return 0;
+
+    /* Access the active screen without invoking clipme or resizing a line. */
+    const termline *line = index234(term->screen, term->curs.y);
+    const termline *previous = term->curs.y ?
+        index234(term->screen, term->curs.y - 1) : NULL;
+    if (!line || line->trusted || line->cols < term->cols ||
+        (line->lattr & (LATTR_MODE | LATTR_WRAPPED)) != LATTR_NORM ||
+        (previous && (previous->lattr & LATTR_WRAPPED)))
+        return 0;
+
+    /* A cursor moved back into an existing input line is ambiguous. */
+    for (int x = term->curs.x; x < term->cols; ++x)
+        if (!terminal_blank_cell(term, &line->chars[x]))
+            return 0;
+
+    int first = 0, end = term->curs.x;
+    while (first < end && terminal_blank_cell(term, &line->chars[first]))
+        ++first;
+    while (end > first && terminal_blank_cell(term, &line->chars[end - 1]))
+        --end;
+
+    buffer_sink sink[1];
+    buffer_sink_init(sink, output, capacity);
+    for (int x = first; x < end; ++x) {
+        const termchar *cell = &line->chars[x];
+        if (cell->chr == UCSWIDE)
+            continue;
+        for (;;) {
+            unsigned uc = terminal_cell_unicode(term, cell->chr);
+            /* Reject direct-font bytes, malformed Unicode and invisible
+             * control/formatting characters that make a match unreliable. */
+            if (uc < ' ' || (uc >= 0x7f && uc <= 0x9f) ||
+                (uc >= 0xd800 && uc <= 0xdfff) || uc > 0x10ffff ||
+                uc == 0x061c || (uc >= 0x200b && uc <= 0x200f) ||
+                (uc >= 0x2028 && uc <= 0x202e) || (uc >= 0x2066 && uc <= 0x2069) ||
+                uc == 0xfeff)
+                return 0;
+            put_utf8_char(sink, uc);
+            if (sink->overflowed)
+                return 0;
+            if (!cell->cc_next)
+                break;
+            cell += cell->cc_next;
+        }
+    }
+    return capacity - sink->space;
+}
+
+size_t term_snapshot_prompt(Terminal *term, char *output, size_t capacity)
+{
+    if (term->disptop)
+        return 0;
+    size_t length = term_snapshot_cursor_line(term, output, capacity);
+    return plausible_prompt(output, length) ? length : 0;
+}
+
+bool term_mcp_credential_prompt(Terminal *term)
+{
+    char line[256];
+    size_t length = term_snapshot_cursor_line(term, line, sizeof(line));
+    if (!length || line[length - 1] != ':')
+        return false;
+
+    static const char *const prompts[] = {
+        "password:", "password for ", "password (",
+        "[sudo] password for ", "enter password", "enter your password",
+        "passphrase:", "passphrase for ", "enter passphrase", "enter your passphrase",
+        "verification code:", "enter verification code", "one-time password:",
+        "otp:", "enter otp", "mfa code:", "login:", "username:",
+    };
+    for (size_t i = 0; i < lenof(prompts); ++i) {
+        size_t prefix = strlen(prompts[i]);
+        if (length >= prefix && !strnicmp(line, prompts[i], prefix))
+            return true;
+    }
+    static const char ssh_suffix[] = "'s password:";
+    return length >= sizeof(ssh_suffix) - 1 &&
+        !strnicmp(line + length - (sizeof(ssh_suffix) - 1), ssh_suffix,
+                  sizeof(ssh_suffix) - 1);
+}
+
+size_t term_snapshot_screen(Terminal *term, char *output, size_t capacity, bool *truncated)
+{
+    buffer_sink sink[1];
+    buffer_sink_init(sink, output, capacity);
+    *truncated = false;
+
+    /* The active screen follows the application, even if the local view is
+     * scrolled back. Preserve rows and avoid the clipboard/selection cache. */
+    for (int y = 0; y < term->rows; ++y) {
+        if (y) {
+            if (!sink->space)
+                goto truncated_output;
+            put_byte(sink, '\n');
+        }
+        const termline *line = index234(term->screen, y);
+        if (!line)
+            continue;
+        int end = min(line->cols, term->cols);
+        if ((line->lattr & LATTR_MODE) != LATTR_NORM)
+            end = (end + 1) / 2;
+        while (end && terminal_blank_cell(term, &line->chars[end - 1]))
+            --end;
+        for (int x = 0; x < end; ++x) {
+            const termchar *cell = &line->chars[x];
+            if (cell->chr == UCSWIDE)
+                continue;
+            for (;;) {
+                unsigned uc = terminal_cell_unicode(term, cell->chr);
+                if (uc < ' ' || (uc >= 0x7f && uc <= 0x9f) ||
+                    IS_SURROGATE(uc) || uc > 0x10ffff)
+                    uc = 0xfffd;
+                size_t bytes = uc < 0x80 ? 1 : uc < 0x800 ? 2 : uc < 0x10000 ? 3 : 4;
+                if (sink->space < bytes)
+                    goto truncated_output;
+                put_utf8_char(sink, uc);
+                if (!cell->cc_next)
+                    break;
+                cell += cell->cc_next;
+            }
+        }
+    }
+    return capacity - sink->space;
+
+  truncated_output:
+    *truncated = true;
+    return capacity - sink->space;
+}
+
 static void paste_from_clip_local(void *vterm)
 {
     Terminal *term = (Terminal *)vterm;
@@ -7802,6 +8096,147 @@ int format_numeric_keypad_key(char *buf, Terminal *term, char key,
     }
 
     return p - buf;
+}
+
+static bool mcp_key_modifier(ptrlen *key, const char *prefix)
+{
+    size_t length = strlen(prefix);
+    if (key->len <= length || memcmp(key->ptr, prefix, length))
+        return false;
+    key->ptr = (const char *)key->ptr + length;
+    key->len -= length;
+    return true;
+}
+
+static size_t mcp_enter(Terminal *term, char *output, bool modified)
+{
+    output[0] = '\r';
+    if (!modified && term->cr_lf_return) {
+        output[1] = '\n';
+        return 2;
+    }
+    return 1;
+}
+
+static size_t mcp_character(char *output, char key, bool ctrl, bool shift)
+{
+    if (ctrl) {
+        if (prompt_ascii_letter(key)) {
+            key &= 0x1f;
+        } else {
+            switch (key) {
+              case ' ': case '@': case '2': key = 0; break;
+              case '[': case '3': key = '\033'; break;
+              case '\\': case '4': key = '\034'; break;
+              case ']': case '5': key = '\035'; break;
+              case '^': case '6': key = '\036'; break;
+              case '_': case '-': case '/': case '7': key = '\037'; break;
+              case '?': case '8': key = '\177'; break;
+              default: return 0;
+            }
+        }
+    } else if (shift && key >= 'a' && key <= 'z') {
+        key -= 'a' - 'A';
+    }
+    output[0] = key;
+    return 1;
+}
+
+static size_t mcp_base_key(Terminal *term, ptrlen key, char *output,
+                           bool ctrl, bool alt, bool shift, bool *consumed_alt)
+{
+    static const struct { const char *name; char code; } arrows[] = {
+        {"up", 'A'}, {"down", 'B'}, {"right", 'C'}, {"left", 'D'},
+    };
+    static const struct { const char *name; SmallKeypadKey code; } editing[] = {
+        {"home", SKK_HOME}, {"end", SKK_END}, {"insert", SKK_INSERT},
+        {"delete", SKK_DELETE}, {"page_up", SKK_PGUP}, {"page_down", SKK_PGDN},
+    };
+    static const struct { const char *name; char code; } keypad[] = {
+        {"keypad_decimal", '.'}, {"keypad_add", '+'}, {"keypad_subtract", '-'},
+        {"keypad_multiply", '*'}, {"keypad_divide", '/'}, {"keypad_enter", '\r'},
+    };
+    for (size_t i = 0; i < lenof(arrows); ++i)
+        if (ptrlen_eq_string(key, arrows[i].name))
+            return format_arrow_key(output, term, arrows[i].code,
+                                    shift, ctrl, alt, consumed_alt);
+    for (size_t i = 0; i < lenof(editing); ++i)
+        if (ptrlen_eq_string(key, editing[i].name))
+            return format_small_keypad_key(output, term, editing[i].code,
+                                           shift, ctrl, alt, consumed_alt);
+
+    const char *name = key.ptr;
+    if (key.len >= 2 && key.len <= 3 && name[0] == 'f' &&
+        name[1] >= '1' && name[1] <= '9' &&
+        (key.len == 2 || prompt_ascii_digit(name[2]))) {
+        int number = name[1] - '0';
+        if (key.len == 3)
+            number = number * 10 + name[2] - '0';
+        if (number > 20 || (number > 12 && term->funky_type == FUNKY_SCO))
+            return 0;
+        return format_function_key(output, term, number, shift, ctrl, alt, consumed_alt);
+    }
+
+    char keypad_code = '\0';
+    if (key.len == 8 && !memcmp(name, "keypad_", 7) && prompt_ascii_digit(name[7]))
+        keypad_code = name[7];
+    for (size_t i = 0; i < lenof(keypad); ++i)
+        if (ptrlen_eq_string(key, keypad[i].name))
+            keypad_code = keypad[i].code;
+    if (keypad_code) {
+        int length = format_numeric_keypad_key(output, term, keypad_code, shift, ctrl);
+        if (length)
+            return length;
+        if (keypad_code == '\r')
+            return mcp_enter(term, output, ctrl || alt || shift);
+        output[0] = keypad_code;
+        return 1;
+    }
+
+    if (ptrlen_eq_string(key, "enter"))
+        return mcp_enter(term, output, ctrl || alt || shift);
+    if (ptrlen_eq_string(key, "backspace")) {
+        output[0] = ctrl || (term->bksp_is_delete != shift) ? '\177' : '\b';
+        return 1;
+    }
+    if (ptrlen_eq_string(key, "tab")) {
+        if (ctrl)
+            return 0;
+        if (shift) {
+            memcpy(output, "\033[Z", 3);
+            return 3;
+        }
+        output[0] = '\t';
+        return 1;
+    }
+    if (ptrlen_eq_string(key, "escape")) {
+        if (ctrl || shift)
+            return 0;
+        output[0] = '\033';
+        return 1;
+    }
+    if (ptrlen_eq_string(key, "space"))
+        return mcp_character(output, ' ', ctrl, shift);
+    if (key.len == 1 && name[0] >= '!' && name[0] <= '~')
+        return mcp_character(output, name[0], ctrl, shift);
+    return 0;
+}
+
+size_t term_encode_mcp_key(Terminal *term, ptrlen key, char output[TERM_KEY_ENCODE_MAX])
+{
+    bool ctrl = mcp_key_modifier(&key, "ctrl+");
+    bool alt = mcp_key_modifier(&key, "alt+");
+    bool shift = mcp_key_modifier(&key, "shift+");
+    bool consumed_alt = false;
+    size_t length = mcp_base_key(term, key, output + alt, ctrl, alt, shift, &consumed_alt);
+    if (!length || !alt)
+        return length;
+    if (consumed_alt) {
+        memmove(output, output + 1, length);
+        return length;
+    }
+    output[0] = '\033';
+    return length + 1;
 }
 
 void term_keyinputw(Terminal *term, const wchar_t *widebuf, int len)

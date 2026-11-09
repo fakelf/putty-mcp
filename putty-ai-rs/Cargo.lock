@@ -433,12 +433,14 @@ name = "putty-ai-mcp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "putty-ai-broker",
  "putty-ai-common",
  "rmcp",
  "serde",
  "serde_json",
  "tokio",
  "uuid",
+ "windows-sys",
 ]
 
 [[package]]

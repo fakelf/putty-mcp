@@ -17,5 +17,5 @@ if ($LASTEXITCODE) { throw 'MCP/native integration tests failed' }
 & (Join-Path $taskRoot 'build-ai/Release/test_ai_command.exe')
 if ($LASTEXITCODE) { throw 'Native command validation failed' }
 & node (Join-Path $taskRoot 'tests/shell-quoting.mjs')
-if ($LASTEXITCODE) { throw 'POSIX shell quoting tests failed (requires Git Bash or PUTTY_TEST_BASH)' }
+if ($LASTEXITCODE) { throw 'Direct terminal command input tests failed' }
 

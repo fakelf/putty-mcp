@@ -2050,6 +2050,7 @@ static void ssh2_userauth_process_queue(PacketProtocolLayer *ppl)
      * any packets since. Signal the transport layer to consider
      * doing an immediate rekey, if it has any reason to want to.
      */
+    ssh_set_authenticated_username(s->ppl.ssh, s->username);
     ssh2_transport_notify_auth_done(s->transport_layer);
 
     /*

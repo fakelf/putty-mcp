@@ -249,6 +249,12 @@ void ldisc_check_sendok(Ldisc *ldisc)
     queue_idempotent_callback(&ldisc->input_queue_callback);
 }
 
+bool ldisc_mcp_command_ready(Ldisc *ldisc)
+{
+    return ldisc && ldisc->backend && !ldisc->userpass_le &&
+        !bufchain_size(&ldisc->input_queue) && !EDITING;
+}
+
 void ldisc_send(Ldisc *ldisc, const void *vbuf, int len, bool interactive)
 {
     assert(ldisc->term);

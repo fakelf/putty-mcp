@@ -2031,6 +2031,10 @@ void term_blink(Terminal *, bool set_cursor);
 void term_do_paste(Terminal *, const wchar_t *, size_t);
 void term_nopaste(Terminal *);
 void term_copyall(Terminal *, const int *, int);
+const wchar_t *term_copy_visible(Terminal *term, size_t *length);
+size_t term_snapshot_prompt(Terminal *term, char *output, size_t capacity);
+size_t term_snapshot_screen(Terminal *term, char *output, size_t capacity, bool *truncated);
+bool term_mcp_credential_prompt(Terminal *term);
 void term_pre_reconfig(Terminal *, Conf *);
 void term_reconfig(Terminal *, Conf *);
 void term_request_copy(Terminal *, const int *clipboards, int n_clipboards);
@@ -2066,6 +2070,10 @@ int format_small_keypad_key(char *buf, Terminal *term, SmallKeypadKey key,
                             bool *consumed_alt);
 int format_numeric_keypad_key(char *buf, Terminal *term, char key,
                               bool shift, bool ctrl);
+#define TERM_KEY_ENCODE_MAX 32
+size_t term_encode_mcp_key(Terminal *term, ptrlen key,
+                           char output[TERM_KEY_ENCODE_MAX]);
+bool term_encode_mcp_text(Terminal *term, ptrlen utf8, strbuf *output);
 
 /*
  * Exports from logging.c.
@@ -2211,6 +2219,7 @@ Ldisc *ldisc_create(Conf *, Terminal *, Backend *, Seat *);
 void ldisc_configure(Ldisc *, Conf *);
 void ldisc_free(Ldisc *);
 void ldisc_send(Ldisc *, const void *buf, int len, bool interactive);
+bool ldisc_mcp_command_ready(Ldisc *);
 void ldisc_echoedit_update(Ldisc *);
 void ldisc_provide_userpass_le(Ldisc *, TermLineEditor *);
 void ldisc_check_sendok(Ldisc *);

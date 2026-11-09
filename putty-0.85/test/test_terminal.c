@@ -524,6 +524,264 @@ static void test_wintitle(Mock *mk)
     SEQUAL(mk->title->s, "bar");
 }
 
+static void test_visible_text(Mock *mk)
+{
+    reset(mk);
+    term_size(mk->term, 2, 20, 10);
+    term_datapl(mk->term, PTRLEN_LITERAL("old\r\nrow one\r\nrow two"));
+    size_t length;
+    const wchar_t *visible = term_copy_visible(mk->term, &length);
+    IEQUAL(length > 7 && wcsncmp(visible, L"row one", 7) == 0, 1);
+
+    term_datapl(mk->term, PTRLEN_LITERAL("\033[?1049h\033[Htop old\r\nPID"));
+    term_datapl(mk->term, PTRLEN_LITERAL("\033[H\033[Ktop new"));
+    visible = term_copy_visible(mk->term, &length);
+    IEQUAL(length > 7 && wcsncmp(visible, L"top new", 7) == 0, 1);
+}
+
+static void test_prompt_snapshot(Mock *mk)
+{
+    char prompt[256];
+    mk->ucsdata->line_codepage = CP_UTF8;
+    reset(mk);
+    term_datapl(mk->term, PTRLEN_LITERAL("clipboard contents"));
+    size_t clipboard_length;
+    const wchar_t *clipboard = term_copy_visible(mk->term, &clipboard_length);
+    term_datapl(mk->term, PTRLEN_LITERAL("\r\033[2K\033[32m  user@host:~$\033[0m  "));
+    size_t length = term_snapshot_prompt(mk->term, prompt, sizeof(prompt));
+    IEQUAL(length, sizeof("user@host:~$") - 1);
+    IEQUAL(memcmp(prompt, "user@host:~$", sizeof("user@host:~$") - 1), 0);
+    IEQUAL(mk->term->last_selected_text == clipboard, 1);
+    IEQUAL(mk->term->last_selected_len - 1, clipboard_length);
+    IEQUAL(mk->term->last_selected_text &&
+           !wcsncmp(mk->term->last_selected_text, L"clipboard contents", 18), 1);
+    IEQUAL(term_snapshot_prompt(mk->term, prompt, 5), 0);
+
+    reset(mk);
+    const char unicode[] = "e\xcc\x81\xe7\x94\xa8\xf0\x9f\x9a\x80@host:~%";
+    term_data(mk->term, unicode, sizeof(unicode) - 1);
+    length = term_snapshot_prompt(mk->term, prompt, sizeof(unicode) - 1);
+    IEQUAL(length, sizeof(unicode) - 1);
+    IEQUAL(memcmp(prompt, unicode, sizeof(unicode) - 1), 0);
+
+    static const char *const network_prompts[] = {
+        "<Switch>", "[Switch]", "[Switch-if]", "[*Switch]", "[~Switch]",
+        "[Switch-GigabitEthernet1/0/1]", "[~Switch-100GE1/0/4.12]",
+        "[Switch-Vlan-interface10]",
+    };
+    for (size_t i = 0; i < lenof(network_prompts); ++i) {
+        reset(mk);
+        size_t expected = strlen(network_prompts[i]);
+        term_data(mk->term, network_prompts[i], expected);
+        IEQUAL(term_snapshot_prompt(mk->term, prompt, sizeof(prompt)), expected);
+        IEQUAL(memcmp(prompt, network_prompts[i], expected), 0);
+    }
+
+    static const char *const ambiguous[] = {
+        "login:", "Password >", "Enter MFA code #", ">", "heredoc>",
+        "router# echo #", "router# cmd\033[3D", "router#\033[?25l",
+        "\033[?1049hrouter#", "router#\033[",
+        "[Y/N]", "[Y/N/C]", "[yes/no]", "[confirm]", "[OK]",
+        "Continue? [Y/N]", "[flash:/startup.cfg]", "[123]", "[*]",
+        "[Switch] display [other]", "[Switch-GigabitEthernet1//0/1]",
+    };
+    for (size_t i = 0; i < lenof(ambiguous); ++i) {
+        reset(mk);
+        term_data(mk->term, ambiguous[i], strlen(ambiguous[i]));
+        IEQUAL(term_snapshot_prompt(mk->term, prompt, sizeof(prompt)), 0);
+    }
+
+    reset(mk);
+    term_size(mk->term, 24, 12, 0);
+    term_datapl(mk->term, PTRLEN_LITERAL("user@host:/very/long/path$ "));
+    IEQUAL(term_snapshot_prompt(mk->term, prompt, sizeof(prompt)), 0);
+
+    reset(mk);
+    term_size(mk->term, 2, 80, 10);
+    term_datapl(mk->term, PTRLEN_LITERAL("old\r\noutput\r\nrouter> "));
+    IEQUAL(term_snapshot_prompt(mk->term, prompt, sizeof(prompt)), 7);
+    term_scroll(mk->term, 0, -1);
+    IEQUAL(term_snapshot_prompt(mk->term, prompt, sizeof(prompt)), 0);
+}
+
+static void check_mcp_key(Mock *mk, const char *name, ptrlen expected)
+{
+    char output[TERM_KEY_ENCODE_MAX];
+    size_t length = term_encode_mcp_key(mk->term, ptrlen_from_asciz(name), output);
+    IEQUAL(length, expected.len);
+    if (length == expected.len && length)
+        IEQUAL(memcmp(output, expected.ptr, length), 0);
+}
+
+static void test_mcp_keys(Mock *mk)
+{
+    reset(mk);
+    Terminal *term = mk->term;
+    term->funky_type = FUNKY_XTERM_216;
+    term->sharrow_type = SHARROW_BITMAP;
+    term->app_cursor_keys = term->no_applic_c = false;
+    check_mcp_key(mk, "space", PTRLEN_LITERAL(" "));
+    check_mcp_key(mk, "q", PTRLEN_LITERAL("q"));
+    check_mcp_key(mk, "ctrl+space", PTRLEN_LITERAL("\0"));
+    check_mcp_key(mk, "ctrl+shift+c", PTRLEN_LITERAL("\003"));
+    check_mcp_key(mk, "ctrl+8", PTRLEN_LITERAL("\177"));
+    check_mcp_key(mk, "alt++", PTRLEN_LITERAL("\033+"));
+    check_mcp_key(mk, "shift+a", PTRLEN_LITERAL("A"));
+    check_mcp_key(mk, "shift+tab", PTRLEN_LITERAL("\033[Z"));
+    check_mcp_key(mk, "up", PTRLEN_LITERAL("\033[A"));
+    check_mcp_key(mk, "ctrl+alt+shift+left", PTRLEN_LITERAL("\033[1;8D"));
+    check_mcp_key(mk, "alt+f4", PTRLEN_LITERAL("\033[1;3S"));
+    check_mcp_key(mk, "ctrl+page_down", PTRLEN_LITERAL("\033[6;5~"));
+    check_mcp_key(mk, "f20", PTRLEN_LITERAL("\033[34~"));
+    check_mcp_key(mk, "f21", PTRLEN_LITERAL(""));
+    check_mcp_key(mk, "ctrl+tab", PTRLEN_LITERAL(""));
+    check_mcp_key(mk, "alt+ctrl+c", PTRLEN_LITERAL(""));
+    term->app_cursor_keys = true;
+    check_mcp_key(mk, "up", PTRLEN_LITERAL("\033OA"));
+    term->app_keypad_keys = true;
+    term->no_applic_k = false;
+    check_mcp_key(mk, "keypad_5", PTRLEN_LITERAL("\033Ou"));
+    check_mcp_key(mk, "keypad_enter", PTRLEN_LITERAL("\033OM"));
+    term->app_keypad_keys = false;
+    check_mcp_key(mk, "keypad_5", PTRLEN_LITERAL("5"));
+    term->bksp_is_delete = true;
+    check_mcp_key(mk, "backspace", PTRLEN_LITERAL("\177"));
+    check_mcp_key(mk, "shift+backspace", PTRLEN_LITERAL("\b"));
+    term->cr_lf_return = true;
+    check_mcp_key(mk, "enter", PTRLEN_LITERAL("\r\n"));
+    check_mcp_key(mk, "alt+enter", PTRLEN_LITERAL("\033\r"));
+    term->funky_type = FUNKY_SCO;
+    check_mcp_key(mk, "f13", PTRLEN_LITERAL(""));
+}
+
+static void test_mcp_screen(Mock *mk)
+{
+    mk->ucsdata->line_codepage = CP_UTF8;
+    reset(mk);
+    term_size(mk->term, 3, 30, 10);
+    term_datapl(mk->term, PTRLEN_LITERAL(
+        "old\r\nfirst\r\n \033[31m\xe9\x9b\xaa\xf0\x9f\x98\x80\033[0m\r\nlast"));
+    size_t clipboard_length;
+    const wchar_t *clipboard = term_copy_visible(mk->term, &clipboard_length);
+    term_scroll(mk->term, 0, -1);
+
+    char output[128];
+    bool truncated;
+    const char expected[] = "first\n \xe9\x9b\xaa\xf0\x9f\x98\x80\nlast";
+    IEQUAL(term_snapshot_screen(mk->term, output, sizeof(output), &truncated),
+           sizeof(expected) - 1);
+    IEQUAL(memcmp(output, expected, sizeof(expected) - 1), 0);
+    IEQUAL(truncated, 0);
+    IEQUAL(mk->term->last_selected_text == clipboard, 1);
+    IEQUAL(mk->term->last_selected_len - 1, clipboard_length);
+
+    const char prefix[] = "first\n \xe9\x9b\xaa";
+    IEQUAL(term_snapshot_screen(mk->term, output, sizeof(prefix), &truncated),
+           sizeof(prefix) - 1);
+    IEQUAL(memcmp(output, prefix, sizeof(prefix) - 1), 0);
+    IEQUAL(truncated, 1);
+
+    term_datapl(mk->term, PTRLEN_LITERAL("\033[?1049h\033[Htop"));
+    IEQUAL(term_snapshot_screen(mk->term, output, sizeof(output), &truncated), 5);
+    IEQUAL(memcmp(output, "top\n\n", 5), 0);
+}
+
+static void test_mcp_text_encoding(Mock *mk)
+{
+    reset(mk);
+    strbuf *encoded = strbuf_new();
+    ptrlen text = PTRLEN_LITERAL("e\xcc\x81\xe9\x9b\xaa\n");
+    mk->ucsdata->line_codepage = CP_UTF8;
+    IEQUAL(term_encode_mcp_text(mk->term, text, encoded), 1);
+    IEQUAL(encoded->len, text.len);
+    IEQUAL(memcmp(encoded->s, text.ptr, text.len), 0);
+
+    mk->ucsdata->line_codepage = CP_ISO8859_1;
+    strbuf_clear(encoded);
+    IEQUAL(term_encode_mcp_text(mk->term, PTRLEN_LITERAL("\xc3\xa9"), encoded), 1);
+    IEQUAL(encoded->len, 1);
+    IEQUAL((unsigned char)encoded->s[0], 0xe9);
+    strbuf_clear(encoded);
+    IEQUAL(term_encode_mcp_text(mk->term, PTRLEN_LITERAL("\xe9\x9b\xaa"), encoded), 0);
+    IEQUAL(encoded->len, 0);
+#ifdef _WIN32
+    mk->ucsdata->line_codepage = 932; /* Windows Shift JIS */
+    IEQUAL(term_encode_mcp_text(mk->term, PTRLEN_LITERAL("\xe3\x81\x82"), encoded), 1);
+    IEQUAL(encoded->len, 2);
+    IEQUAL(memcmp(encoded->s, "\x82\xa0", 2), 0);
+    strbuf_clear(encoded);
+    IEQUAL(term_encode_mcp_text(mk->term, PTRLEN_LITERAL("\xf0\x9f\x98\x80"), encoded), 0);
+    IEQUAL(encoded->len, 0);
+#endif
+    strbuf_free(encoded);
+}
+
+typedef struct MockInputBackend {
+    Backend backend;
+    strbuf *sent;
+    bool ready;
+} MockInputBackend;
+
+static void mock_input_send(Backend *backend, const char *data, size_t length)
+{
+    MockInputBackend *input = container_of(backend, MockInputBackend, backend);
+    put_data(input->sent, data, length);
+}
+
+static bool mock_input_sendok(Backend *backend)
+{
+    return container_of(backend, MockInputBackend, backend)->ready;
+}
+
+static bool mock_input_option(Backend *backend, int option) { return false; }
+static void mock_input_ldisc(Backend *backend, Ldisc *ldisc) {}
+
+static const BackendVtable mock_input_vt = {
+    .send = mock_input_send,
+    .sendok = mock_input_sendok,
+    .ldisc_option_state = mock_input_option,
+    .provide_ldisc = mock_input_ldisc,
+};
+
+static void test_mcp_ldisc(Mock *mk)
+{
+    reset(mk);
+    MockInputBackend input = { .backend = { .vt = &mock_input_vt },
+                               .sent = strbuf_new(), .ready = true };
+    Ldisc *ldisc = ldisc_create(mk->conf, mk->term, &input.backend, NULL);
+    IEQUAL(ldisc_mcp_command_ready(ldisc), 1);
+    char output[TERM_KEY_ENCODE_MAX];
+    size_t length = term_encode_mcp_key(mk->term, PTRLEN_LITERAL("ctrl+space"), output);
+    ldisc_send(ldisc, output, (int)length, true);
+    IEQUAL(input.sent->len, 1);
+    IEQUAL(input.sent->s[0], 0);
+    input.ready = false;
+    ldisc_send(ldisc, "q", 1, true);
+    IEQUAL(ldisc_mcp_command_ready(ldisc), 0);
+    IEQUAL(input.sent->len, 1);
+    ldisc_free(ldisc);
+    strbuf_free(input.sent);
+}
+
+static void test_mcp_credential_prompt(Mock *mk)
+{
+    static const char *const prompts[] = {
+        "Password: ", "[sudo] password for local: ", "user@example's password: ",
+        "Enter passphrase for key '/key': ", "Verification code: ", "OTP: ",
+    };
+    for (size_t i = 0; i < lenof(prompts); ++i) {
+        reset(mk);
+        term_data(mk->term, prompts[i], strlen(prompts[i]));
+        IEQUAL(term_mcp_credential_prompt(mk->term), 1);
+    }
+    reset(mk);
+    term_datapl(mk->term, PTRLEN_LITERAL("host:~/passwords$ "));
+    IEQUAL(term_mcp_credential_prompt(mk->term), 0);
+    reset(mk);
+    term_datapl(mk->term, PTRLEN_LITERAL("\033[?1049hPassword: "));
+    IEQUAL(term_mcp_credential_prompt(mk->term), 0);
+}
+
 int main(void)
 {
     Mock *mk = mock_new();
@@ -533,6 +791,13 @@ int main(void)
     test_wrap(mk);
     test_nonwrap(mk);
     test_wintitle(mk);
+    test_visible_text(mk);
+    test_prompt_snapshot(mk);
+    test_mcp_keys(mk);
+    test_mcp_screen(mk);
+    test_mcp_text_encoding(mk);
+    test_mcp_ldisc(mk);
+    test_mcp_credential_prompt(mk);
 
     bool failed = mk->any_test_failed;
     mock_free(mk);

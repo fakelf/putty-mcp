@@ -22,6 +22,10 @@
 #include "win-gui-seat.h"
 #include "tree234.h"
 #include "../ai_bridge/bridge.h"
+#ifdef PUTTY_AI_BRIDGE
+#include "ai-top.h"
+#include "ai-child.h"
+#endif
 
 #ifdef NO_MULTIMON
 #include <multimon.h>
@@ -52,6 +56,7 @@
 #define IDM_COPY      0x0190
 #define IDM_PASTE     0x01A0
 #define IDM_SPECIALSEP 0x0200
+#define IDM_AI_CHILD_MODE 0x0310
 
 #define IDM_SPECIAL_MIN 0x0400
 #define IDM_SPECIAL_MAX 0x0800
@@ -125,6 +130,13 @@ static bool get_fullscreen_rect(WinGuiSeat *wgs, RECT *ss);
 static bool get_workingarea_rect(WinGuiSeat *wgs, RECT *ss);
 
 static void conf_cache_data(WinGuiSeat *wgs);
+static void wgs_cleanup(WinGuiSeat *wgs);
+#ifdef PUTTY_AI_BRIDGE
+static void win_ai_revoke_children(WinGuiSeat *wgs);
+static void win_ai_close_children(WinGuiSeat *wgs);
+static void win_ai_child_detach(WinGuiSeat *wgs);
+static void win_ai_child_cleanup(void *ctx);
+#endif
 
 static struct sesslist sesslist;       /* for saved-session menu */
 
@@ -281,10 +293,30 @@ static const SeatVtable win_seat_vt = {
     .get_cursor_position = win_seat_get_cursor_position,
 };
 
+#ifdef PUTTY_AI_BRIDGE
+static void win_ai_cancel_child_close(WinGuiSeat *wgs)
+{
+    wgs->ai_close_pending = false;
+    memset(wgs->ai_close_id, 0, sizeof(wgs->ai_close_id));
+}
+#endif
+
 static void win_ai_disable(WinGuiSeat *wgs)
 {
+#ifdef PUTTY_AI_BRIDGE
+    if (wgs->ai_child_window) {
+        win_ai_cancel_child_close(wgs);
+    } else {
+        ai_bridge_child_mode(wgs->ai_bridge, false);
+    }
+    ai_top_destroy(&wgs->ai_top);
+#endif
     ai_bridge_cancel_approval(wgs->term_hwnd);
     ai_bridge_stop(&wgs->ai_bridge);
+#ifdef PUTTY_AI_BRIDGE
+    if (!wgs->ai_child_window)
+        win_ai_revoke_children(wgs);
+#endif
 }
 
 static void start_backend(WinGuiSeat *wgs)
@@ -293,6 +325,9 @@ static void start_backend(WinGuiSeat *wgs)
     char *error, *realhost;
     int i;
 
+#ifdef PUTTY_AI_BRIDGE
+    win_ai_close_children(wgs);
+#endif
     win_ai_disable(wgs);
     wgs->ai_session_started = false;
 
@@ -357,6 +392,9 @@ static void close_session(void *vctx)
     int i;
 
     wgs->session_closed = true;
+#ifdef PUTTY_AI_BRIDGE
+    win_ai_close_children(wgs);
+#endif
     win_ai_disable(wgs);
     wgs->ai_session_started = false;
     newtitle = dupprintf("%s (inactive)", appname);
@@ -568,6 +606,9 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
 
     {
         int winmode = WS_OVERLAPPEDWINDOW | WS_VSCROLL;
+#ifdef PUTTY_AI_BRIDGE
+        winmode |= WS_CLIPCHILDREN;
+#endif
         int exwinmode = 0;
         const struct BackendVtable *vt =
             backend_vt_from_proto(be_default_protocol);
@@ -801,6 +842,10 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
             ai_bridge_add_menu(m);
             sfree(str);
         }
+#ifdef PUTTY_AI_BRIDGE
+        AppendMenu(wgs->popup_menus[SYSMENU].menu, MF_ENABLED, IDM_AI_CHILD_MODE,
+                   "AI multi-window mode (auto-run)");
+#endif
     }
 
     if (restricted_acl()) {
@@ -906,6 +951,13 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
 
 static void wgs_cleanup(WinGuiSeat *wgs)
 {
+#ifdef PUTTY_AI_BRIDGE
+    if (wgs->ai_child_window) {
+        win_ai_child_cleanup(wgs);
+        return;
+    }
+    win_ai_close_children(wgs);
+#endif
     win_ai_disable(wgs);
     deinit_fonts(wgs);
     sfree(wgs->logpal);
@@ -2223,18 +2275,472 @@ static void wm_size_resize_term(WinGuiSeat *wgs, LPARAM lParam)
     conf_set_int(wgs->conf, CONF_width, w);
 }
 
-/* Both checks run on the PuTTY event thread, including after local dialogs. */
-static int win_ai_send(void *ctx, const char *data, size_t len)
+#ifdef PUTTY_AI_BRIDGE
+static ConnectionLayer *win_ai_parent_connection(WinGuiSeat *wgs, const char **host,
+                                                 int *port, const char **user)
+{
+    WinGuiSeat *parent = wgs->ai_child_window ? wgs->ai_parent : wgs;
+    if (!parent || !parent->ai_session_started || parent->session_closed ||
+        parent->term->trusted)
+        return NULL;
+    return ssh_task_connection(parent->backend, host, port, user);
+}
+
+static bool win_ai_child_has_grant(const WinGuiSeat *wgs)
+{
+    const WinGuiSeat *parent = wgs->ai_parent;
+    return wgs->ai_child_grant && parent && parent->ai_child_mode && parent->ai_bridge;
+}
+
+static void win_ai_child_menu(WinGuiSeat *wgs)
+{
+    if (wgs->ai_bridge)
+        return;
+    for (size_t i = 0; i < lenof(wgs->popup_menus); ++i)
+        ModifyMenuA(wgs->popup_menus[i].menu, IDM_AI_OBSERVE,
+                    MF_BYCOMMAND | MF_STRING | MF_GRAYED, IDM_AI_OBSERVE, "AI disabled");
+}
+
+static void win_ai_revoke_children(WinGuiSeat *wgs)
+{
+    for (size_t i = 0; i < lenof(wgs->ai_children); ++i) {
+        WinGuiSeat *child = wgs->ai_children[i];
+        if (!child)
+            continue;
+        if (child->ai_child_grant && !child->ai_session_started)
+            ai_bridge_child_failed(wgs->ai_bridge, child->ai_child_id, 4);
+        child->ai_child_grant = false;
+        win_ai_disable(child);
+        win_ai_child_menu(child);
+        child->ai_title_state = 0;
+        sw_SetWindowText(child->term_hwnd, child->window_name);
+    }
+}
+
+static void win_ai_close_children(WinGuiSeat *wgs)
+{
+    for (size_t i = 0; i < lenof(wgs->ai_children); ++i) {
+        WinGuiSeat *child = wgs->ai_children[i];
+        if (child)
+            DestroyWindow(child->term_hwnd);
+    }
+}
+
+static void win_ai_child_detach(WinGuiSeat *wgs)
+{
+    WinGuiSeat *parent = wgs->ai_parent;
+    if (parent) {
+        if (wgs->ai_child_grant && !wgs->ai_session_started)
+            ai_bridge_child_failed(parent->ai_bridge, wgs->ai_child_id, 4);
+        for (size_t i = 0; i < lenof(parent->ai_children); ++i)
+            if (parent->ai_children[i] == wgs)
+                parent->ai_children[i] = NULL;
+        wgs->ai_parent = NULL;
+    }
+    wgs->ai_child_grant = false;
+    wgs->session_closed = true;
+    win_ai_disable(wgs);
+    if (wgs->backend)
+        ai_child_backend_close(wgs->backend);
+}
+
+static void win_ai_child_cleanup(void *ctx)
 {
     WinGuiSeat *wgs = ctx;
+    if (wgs->term_hwnd)
+        DestroyWindow(wgs->term_hwnd);
+    win_ai_child_detach(wgs);
+    delete_callbacks_for_context(wgs);
+    expire_timer_context(wgs);
+    if (wgs->ldisc)
+        ldisc_free(wgs->ldisc);
+    if (wgs->backend)
+        backend_free(wgs->backend);
+    if (wgs->term)
+        term_free(wgs->term);
+    if (wgs->logctx)
+        log_free(wgs->logctx);
+    if (wgs->caretbm)
+        DeleteObject(wgs->caretbm);
+    if (wgs->popup_menus[CTXMENU].menu)
+        DestroyMenu(wgs->popup_menus[CTXMENU].menu);
+    deinit_fonts(wgs);
+    sfree(wgs->logpal);
+    if (wgs->pal)
+        DeleteObject(wgs->pal);
+    sfree(wgs->window_name);
+    sfree(wgs->icon_name);
+    conf_free(wgs->conf);
+    wgs_unlink(wgs);
+    sfree(wgs);
+}
+
+static void win_ai_child_destroy_window(void *ctx)
+{
+    WinGuiSeat *wgs = ctx;
+    if (wgs->term_hwnd)
+        DestroyWindow(wgs->term_hwnd);
+}
+
+void win_ai_child_connected(WinGuiSeat *wgs)
+{
+    wgs->ai_session_started = true;
+    WinGuiSeat *parent = wgs->ai_parent;
+    const char *host, *user;
+    int port;
+    if (!win_ai_child_has_grant(wgs))
+        return;
+    if (!win_ai_parent_connection(wgs, &host, &port, &user)) {
+        wgs->ai_child_grant = false;
+        ai_bridge_child_failed(parent->ai_bridge, wgs->ai_child_id, 4);
+        return;
+    }
+
+    wgs->ai_bridge = ai_bridge_start_child(wgs->term_hwnd, parent->ai_bridge, wgs->ai_child_id);
+    if (!wgs->ai_bridge) {
+        wgs->ai_child_grant = false;
+        ai_bridge_child_failed(parent->ai_bridge, wgs->ai_child_id, 4);
+        return;
+    }
+    char *target = dupprintf("%s @ %s (port %d)", user, host, port);
+    ai_bridge_top_target(wgs->ai_bridge, target);
+    sfree(target);
+    ai_bridge_dispatch(wgs->ai_bridge, wgs->term_hwnd, wgs->popup_menus[CTXMENU].menu);
+    wgs->ai_title_state = ai_bridge_access_state(wgs->ai_bridge);
+    sw_SetWindowText(wgs->term_hwnd, wgs->window_name);
+}
+
+void win_ai_child_disconnected(WinGuiSeat *wgs, unsigned startup_stage)
+{
+    wgs->session_closed = true;
+    if (startup_stage && wgs->ai_child_grant && wgs->ai_parent)
+        ai_bridge_child_failed(wgs->ai_parent->ai_bridge, wgs->ai_child_id, startup_stage);
+    wgs->ai_child_grant = false;
+    queue_toplevel_callback(win_ai_child_destroy_window, wgs);
+}
+
+static RECT win_ai_child_position(WinGuiSeat *parent)
+{
+    RECT work;
+    if (!get_workingarea_rect(parent, &work) || work.right <= work.left || work.bottom <= work.top)
+        work = (RECT){0, 0, max(1, GetSystemMetrics(SM_CXSCREEN)),
+                     max(1, GetSystemMetrics(SM_CYSCREEN))};
+
+    RECT occupied[AI_CHILD_LIMIT + 1];
+    size_t count = 0;
+    for (size_t i = 0; i < lenof(occupied); ++i) {
+        WinGuiSeat *window = i ? parent->ai_children[i - 1] : parent;
+        RECT bounds;
+        if (window && window->term_hwnd && !IsIconic(window->term_hwnd) &&
+            GetWindowRect(window->term_hwnd, &bounds) &&
+            IntersectRect(&occupied[count], &work, &bounds))
+            ++count;
+    }
+    int dpi_x = parent->dpi_info.cur_dpi.x ? parent->dpi_info.cur_dpi.x : 96;
+    int dpi_y = parent->dpi_info.cur_dpi.y ? parent->dpi_info.cur_dpi.y : 96;
+    return ai_child_placement(work, occupied, count, MulDiv(640, dpi_x, 96),
+                              MulDiv(420, dpi_y, 96), max(1, MulDiv(36, dpi_y, 96)));
+}
+
+static bool win_ai_create_child(WinGuiSeat *parent, size_t index, ConnectionLayer *connection,
+                                const unsigned char id[16], const char *host, const char *user)
+{
+    WinGuiSeat *wgs = snew(WinGuiSeat);
+    memset(wgs, 0, sizeof(*wgs));
+    wgs_link(wgs);
+    wgs->ai_child_window = true;
+    wgs->ai_child_grant = true;
+    memcpy(wgs->ai_child_id, id, sizeof(wgs->ai_child_id));
+    wgs->seat.vt = &win_seat_vt;
+    wgs->logpolicy.vt = &win_gui_logpolicy_vt;
+    wgs->termwin.vt = &windows_termwin_vt;
+    wgs->caret_x = wgs->caret_y = -1;
+    wgs->conf = conf_copy(parent->conf);
+    conf_set_bool(wgs->conf, CONF_system_colour, false);
+    conf_set_bool(wgs->conf, CONF_no_remote_wintitle, true);
+    conf_set_bool(wgs->conf, CONF_no_remote_resize, true);
+    conf_set_int(wgs->conf, CONF_logtype, LGTYP_NONE);
+    conf_set_int(wgs->conf, CONF_localecho, FORCE_OFF);
+    conf_set_int(wgs->conf, CONF_localedit, FORCE_OFF);
+    for (int i = 0; i < 3; ++i) {
+        conf_set_int_int(wgs->conf, CONF_colours, CONF_COLOUR_bg * 3 + i, 0);
+        conf_set_int_int(wgs->conf, CONF_colours, CONF_COLOUR_fg * 3 + i, 187);
+    }
+    conf_cache_data(wgs);
+
+    char *title = dupprintf("PuTTY child %u - %s @ %s", (unsigned)index + 1, user, host);
+    wgs->window_name = dup_mb_to_wc(CP_UTF8, title);
+    wgs->icon_name = dupwcs(wgs->window_name);
+    sfree(title);
+    DWORD style = WS_OVERLAPPEDWINDOW | WS_VSCROLL;
+    RECT position = win_ai_child_position(parent);
+    wgs->term_hwnd = CreateWindowExW(0, terminal_window_class_w(), wgs->window_name, style,
+        position.left, position.top, position.right - position.left, position.bottom - position.top,
+        parent->term_hwnd, NULL, GetModuleHandle(NULL), NULL);
+    if (!wgs->term_hwnd) {
+        win_ai_child_cleanup(wgs);
+        return false;
+    }
+    SetWindowLongPtrW(wgs->term_hwnd, GWLP_USERDATA, (LONG_PTR)wgs);
+    init_dpi_info(wgs);
+    init_fonts(wgs, 0, 0);
+    init_palette(wgs);
+    wgs->term = term_init(wgs->conf, &wgs->ucsdata, &wgs->termwin);
+    setup_clipboards(wgs->term, wgs->conf);
+    wgs->logctx = log_init(&wgs->logpolicy, wgs->conf);
+    term_provide_logctx(wgs->term, wgs->logctx);
+    term_set_trust_status(wgs->term, false);
+
+    wgs->offset_width = wgs->offset_height = conf_get_int(wgs->conf, CONF_window_border);
+    RECT client, frame;
+    GetClientRect(wgs->term_hwnd, &client);
+    GetWindowRect(wgs->term_hwnd, &frame);
+    wgs->extra_width = frame.right - frame.left - client.right + wgs->offset_width * 2;
+    wgs->extra_height = frame.bottom - frame.top - client.bottom + wgs->offset_height * 2;
+    int cols = max(1, (client.right - wgs->offset_width * 2) / wgs->font_width);
+    int rows = max(1, (client.bottom - wgs->offset_height * 2) / wgs->font_height);
+    term_size(wgs->term, rows, cols, conf_get_int(wgs->conf, CONF_savelines));
+    size_t caret_bytes = (wgs->font_width + 15) / 16 * 2 * wgs->font_height;
+    char *caret_bits = snewn(caret_bytes, char);
+    memset(caret_bits, 0, caret_bytes);
+    wgs->caretbm = CreateBitmap(wgs->font_width, wgs->font_height, 1, 1, caret_bits);
+    sfree(caret_bits);
+    wgs->dbltime = GetDoubleClickTime();
+    wgs->lastbtn = MBT_NOTHING;
+    wgs->lastact = MA_NOTHING;
+    set_input_locale(wgs, GetKeyboardLayout(0));
+
+    wgs->popup_menus[SYSMENU].menu = GetSystemMenu(wgs->term_hwnd, false);
+    wgs->popup_menus[CTXMENU].menu = CreatePopupMenu();
+    for (size_t i = 0; i < lenof(wgs->popup_menus); ++i) {
+        HMENU menu = wgs->popup_menus[i].menu;
+        AppendMenuA(menu, MF_ENABLED, IDM_COPY, "&Copy");
+        AppendMenuA(menu, MF_ENABLED, IDM_PASTE, "&Paste");
+        AppendMenuA(menu, MF_ENABLED, IDM_COPYALL, "C&opy All to Clipboard");
+        AppendMenuA(menu, MF_ENABLED, IDM_CLRSB, "C&lear Scrollback");
+        ai_bridge_add_menu(menu);
+    }
+    win_ai_child_menu(wgs);
+    wgs->backend = ai_child_backend_new(wgs);
+    term_provide_backend(wgs->term, wgs->backend);
+    wgs->ldisc = ldisc_create(wgs->conf, wgs->term, wgs->backend, &wgs->seat);
+    wgs->ai_parent = parent;
+    parent->ai_children[index] = wgs;
+    ai_child_backend_open(wgs->backend, connection);
+    ShowWindow(wgs->term_hwnd, SW_SHOWNOACTIVATE);
+    return true;
+}
+
+static bool win_ai_child_can_close(WinGuiSeat *wgs)
+{
+    return wgs->ai_child_window && win_ai_child_has_grant(wgs) && wgs->ai_bridge &&
+        wgs->ai_session_started && !wgs->session_closed &&
+        !wgs->term->trusted && !wgs->term->alt_which && !wgs->send_raw_mouse &&
+        !wgs->term->paste_len && wgs->backend && backend_sendok(wgs->backend) &&
+        backend_sendbuffer(wgs->backend) == 0;
+}
+
+static bool win_ai_terminal_target(WinGuiSeat *wgs)
+{
+    return wgs->ai_bridge && wgs->ai_session_started && !wgs->session_closed &&
+        !wgs->ai_close_pending && wgs->backend && !wgs->term->trusted &&
+        !ai_top_active(wgs->ai_top) && conf_get_int(wgs->conf, CONF_protocol) == PROT_SSH &&
+        (!wgs->ai_child_window || win_ai_child_has_grant(wgs));
+}
+
+static bool win_ai_paste_available(const Terminal *term)
+{
+    return term->bracketed_paste && !term->no_bracketed_paste;
+}
+
+static bool win_ai_terminal_stable(Terminal *term)
+{
+    return !term->userpass_state && !term->in_term_out &&
+        !bufchain_size(&term->inbuf) && term->termstate == TOPLEVEL && !term->utf8.state;
+}
+
+static bool win_ai_terminal_screen(WinGuiSeat *wgs)
+{
+    AiBridge *bridge = wgs->ai_bridge;
+    if (!bridge)
+        return false;
+    if (!win_ai_terminal_target(wgs) || !ai_bridge_terminal_active(bridge)) {
+        ai_bridge_terminal_screen(bridge, NULL, 0, 0, 0, -1, -1, 0);
+        return false;
+    }
+
+    Terminal *term = wgs->term;
+    if (!win_ai_terminal_stable(term))
+        return false;
+    if (term_mcp_credential_prompt(term)) {
+        ai_bridge_terminal_screen(bridge, NULL, 0, 0, 0, -1, -1, 0);
+        return false;
+    }
+    char text[AI_TERMINAL_SCREEN_MAX];
+    bool truncated;
+    size_t length = term_snapshot_screen(term, text, sizeof(text), &truncated);
+    int x = -1, y = -1;
+    if (term->cursor_on)
+        term_get_cursor_position(term, &x, &y);
+    unsigned flags = (truncated ? 1 : 0) | (win_ai_paste_available(term) ? 2 : 0) |
+        (term->alt_which ? 4 : 0);
+    ai_bridge_terminal_screen(bridge, text, length, term->cols, term->rows, x, y, flags);
+    return true;
+}
+
+static bool win_ai_terminal_input(WinGuiSeat *wgs, AiInputKind kind, const char *data, size_t len)
+{
+    Terminal *term = wgs->term;
+    if (!win_ai_terminal_target(wgs) || !ldisc_mcp_command_ready(wgs->ldisc) ||
+        !win_ai_terminal_stable(term) || term_mcp_credential_prompt(term) ||
+        !backend_sendok(wgs->backend) || backend_sendbuffer(wgs->backend) != 0 ||
+        term->paste_len || term->bracketed_paste_active)
+        return false;
+    if (kind == AI_INPUT_ATTACH)
+        return len == 0;
+    if (!ai_bridge_terminal_active(wgs->ai_bridge) ||
+        (kind == AI_INPUT_PASTE && !win_ai_paste_available(term)))
+        return false;
+    if (!len)
+        return true;
+    if (!data)
+        return false;
+
+    if (kind == AI_INPUT_KEY) {
+        if (len > AI_TERMINAL_KEY_MAX)
+            return false;
+        char sequence[TERM_KEY_ENCODE_MAX];
+        size_t length = term_encode_mcp_key(term, make_ptrlen(data, len), sequence);
+        if (!length)
+            return false;
+        ldisc_send(wgs->ldisc, sequence, (int)length, true);
+        return true;
+    }
+
+    bool paste = kind == AI_INPUT_PASTE;
+    if (len > AI_TERMINAL_TEXT_MAX || !ai_text_validate(data, len) ||
+        (!paste && (memchr(data, '\n', len) || memchr(data, '\t', len))))
+        return false;
+    strbuf *sequence = strbuf_new_nm();
+    if (paste)
+        put_dataz(sequence, "\033[200~");
+    bool valid = term_encode_mcp_text(term, make_ptrlen(data, len), sequence);
+    if (valid) {
+        if (paste)
+            put_dataz(sequence, "\033[201~");
+        /* One complete bracketed write, with no unframed or clipboard fallback. */
+        ldisc_send(wgs->ldisc, sequence->s, (int)sequence->len, !paste);
+    }
+    strbuf_free(sequence);
+    return valid;
+}
+#endif
+
+/* Both checks run on the PuTTY event thread, including after local dialogs. */
+static int win_ai_send(void *ctx, AiInputKind kind, AiTaskProgram program,
+                       const char *data, size_t len)
+{
+    WinGuiSeat *wgs = ctx;
+#ifdef PUTTY_AI_BRIDGE
+    if (kind == AI_INPUT_SCREEN_REFRESH)
+        return program == AI_PROGRAM_NONE && !len && win_ai_terminal_screen(wgs);
+    if (kind == AI_INPUT_ATTACH || kind == AI_INPUT_KEY ||
+        kind == AI_INPUT_TEXT || kind == AI_INPUT_PASTE)
+        return program == AI_PROGRAM_NONE && win_ai_terminal_input(wgs, kind, data, len);
+    if (kind == AI_INPUT_CHILD_OPEN) {
+        const char *host, *user;
+        if (wgs->ai_child_window || !wgs->ai_child_mode || !wgs->ai_bridge ||
+            !data || (len && len != 16))
+            return 0;
+        ConnectionLayer *connection = win_ai_parent_connection(wgs, &host, NULL, &user);
+        if (!connection)
+            return 0;
+        for (size_t i = 0; i < lenof(wgs->ai_children); ++i) {
+            if (wgs->ai_children[i])
+                continue;
+            if (len && !win_ai_create_child(wgs, i, connection, (const unsigned char *)data,
+                                            host, user))
+                ai_bridge_child_failed(wgs->ai_bridge, (const unsigned char *)data, 4);
+            return 1;
+        }
+        return 0;
+    }
+    if (kind == AI_INPUT_CHILD_CLOSE) {
+        if (wgs->ai_close_pending || !data || (len && len != 16) || !win_ai_child_can_close(wgs))
+            return 0;
+        if (len) {
+            wgs->ai_close_pending = true;
+            memcpy(wgs->ai_close_id, data, sizeof(wgs->ai_close_id));
+        }
+        return 1;
+    }
+    if (wgs->ai_close_pending ||
+        (wgs->ai_child_window && (!win_ai_child_has_grant(wgs) ||
+         (kind != AI_INPUT_SCRIPT && kind != AI_INPUT_INTERRUPT))))
+        return 0;
+    if (kind == AI_INPUT_TASK_START) {
+        bool file = program == AI_PROGRAM_VI_FILE;
+        if (!wgs->ai_session_started || wgs->session_closed || wgs->term->trusted ||
+            ai_top_active(wgs->ai_top) || (!file && !ai_task_command(program)) ||
+            !ssh_task_connection(wgs->backend, NULL, NULL, NULL))
+            return 0;
+        if (!len)
+            return 1;
+        if (!data || (file ? len <= 16 || len - 16 > AI_VI_PATH_MAX : len != 16))
+            return 0;
+        ai_top_destroy(&wgs->ai_top);
+        wgs->ai_top = ai_top_start(wgs, program, (const unsigned char *)data,
+                                  file ? data + 16 : NULL, len - 16);
+        return wgs->ai_top != NULL;
+    }
+    if (kind == AI_INPUT_VI_TEXT) {
+        if (!data || wgs->session_closed || wgs->term->trusted || (len && len <= 16))
+            return 0;
+        return ai_top_paste(wgs->ai_top, program, (const unsigned char *)data,
+                            len ? data + 16 : NULL, len ? len - 16 : 0);
+    }
+    if (kind == AI_INPUT_VI_SAVE || kind == AI_INPUT_VI_SAVE_CHECK) {
+        if (!data || program != AI_PROGRAM_VI_FILE || wgs->session_closed ||
+            wgs->term->trusted || len <= 16 || len - 16 > AI_VI_PATH_MAX)
+            return 0;
+        return ai_top_save(wgs->ai_top, (const unsigned char *)data, data + 16,
+                           len - 16, kind == AI_INPUT_VI_SAVE);
+    }
+    if (kind == AI_INPUT_TASK_QUIT || kind == AI_INPUT_TASK_INTERRUPT || ai_task_special_key(kind)) {
+        const unsigned char *id = (const unsigned char *)data;
+        if (!id || wgs->session_closed || wgs->term->trusted)
+            return 0;
+        return len ? len == 16 && ai_top_send(wgs->ai_top, program, id, kind) :
+            ai_top_can_send(wgs->ai_top, program, id);
+    }
+    if (ai_top_active(wgs->ai_top))
+        return 0;
+#endif
     if (!wgs->ai_session_started || wgs->session_closed || !wgs->backend ||
         !wgs->ldisc || !backend_sendok(wgs->backend) || backend_sendbuffer(wgs->backend) != 0 ||
-        wgs->term->trusted || wgs->term->alt_which ||
-        wgs->term->paste_len || wgs->send_raw_mouse ||
+        wgs->term->trusted || wgs->term->paste_len ||
         conf_get_int(wgs->conf, CONF_protocol) != PROT_SSH)
         return 0;
+    if (kind == AI_INPUT_INTERRUPT) {
+        if (data)
+            ldisc_send(wgs->ldisc, "\003", 1, true);
+        return 1;
+    }
+    if (kind != AI_INPUT_SCRIPT || wgs->term->alt_which || wgs->send_raw_mouse)
+        return 0;
+#ifdef PUTTY_AI_BRIDGE
+    if (!ldisc_mcp_command_ready(wgs->ldisc))
+        return 0;
+    if (data) {
+        char prompt[AI_COMMAND_PROMPT_MAX];
+        size_t prompt_len = term_snapshot_prompt(wgs->term, prompt, sizeof(prompt));
+        ai_bridge_command_prompt(wgs->ai_bridge, prompt, prompt_len);
+        backend_send(wgs->backend, data, len);
+    }
+#else
     if (data)
         ldisc_send(wgs->ldisc, data, (int)len, false);
+#endif
     return 1;
 }
 
@@ -2246,31 +2752,121 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT message,
     WinGuiSeat *wgs = (WinGuiSeat *)GetWindowLongPtr(hwnd, GWLP_USERDATA);
 
     if (wgs) {
+#ifdef PUTTY_AI_BRIDGE
+        if (message == WM_AI_CLOSE_CHILD) {
+            if (wgs->ai_child_window && wgs->ai_close_pending) {
+                unsigned char id[16];
+                memcpy(id, wgs->ai_close_id, sizeof(id));
+                win_ai_cancel_child_close(wgs);
+                if (!win_ai_child_can_close(wgs))
+                    return 0;
+                WinGuiSeat *parent = wgs->ai_parent;
+                AiBridge *parent_bridge = parent->ai_bridge;
+                if (DestroyWindow(hwnd) && parent_bridge && parent->ai_bridge == parent_bridge)
+                    ai_bridge_child_closed(parent_bridge, id);
+            }
+            return 0;
+        }
+        if (message == WM_NCDESTROY && wgs->ai_child_window) {
+            wgs->term_hwnd = NULL;
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+            queue_toplevel_callback(win_ai_child_cleanup, wgs);
+            return sw_DefWindowProc(hwnd, message, wParam, lParam);
+        }
+        if (ai_top_active(wgs->ai_top) &&
+            (message == WM_VSCROLL || message == WM_GOT_CLIPDATA ||
+             ((message == WM_COMMAND || message == WM_SYSCOMMAND) &&
+              (wParam & ~0xF) == IDM_PASTE)))
+            return 0;
+#endif
         if (message == WM_AI_BRIDGE || (message == WM_TIMER && wParam == AI_TIMER)) {
+#ifdef PUTTY_AI_BRIDGE
+            const char *host, *user;
+            int port;
+            bool parent_ready = win_ai_parent_connection(wgs, &host, &port, &user) != NULL;
+            if (parent_ready) {
+                char *target = dupprintf("%s @ %s (port %d)", user, host, port);
+                ai_bridge_top_target(wgs->ai_bridge, target);
+                sfree(target);
+            } else {
+                ai_bridge_top_target(wgs->ai_bridge, NULL);
+            }
+            if (!wgs->ai_child_window)
+                ai_bridge_child_mode(wgs->ai_bridge, wgs->ai_child_mode && parent_ready);
+            ai_top_tick(wgs->ai_top);
+            win_ai_terminal_screen(wgs);
+#endif
             ai_bridge_dispatch(wgs->ai_bridge, hwnd, wgs->popup_menus[CTXMENU].menu);
             ai_bridge_offer_pending(&wgs->ai_bridge, hwnd, wgs->popup_menus[CTXMENU].menu,
-                                    win_ai_send(wgs, NULL, 0), win_ai_send, wgs);
+                                    win_ai_send, wgs);
             if (wgs->ai_title_state != ai_bridge_access_state(wgs->ai_bridge)) {
                 wgs->ai_title_state = ai_bridge_access_state(wgs->ai_bridge);
                 sw_SetWindowText(hwnd, wgs->window_name);
             }
+#ifdef PUTTY_AI_BRIDGE
+            if (wgs->ai_child_window)
+                win_ai_child_menu(wgs);
+#endif
+            return 0;
+        }
+#ifdef PUTTY_AI_BRIDGE
+        if ((message == WM_COMMAND || message == WM_SYSCOMMAND) &&
+            (wParam & ~0xF) == IDM_AI_CHILD_MODE) {
+            if (!wgs->ai_child_window) {
+                wgs->ai_child_mode = !wgs->ai_child_mode;
+                ai_bridge_child_mode(wgs->ai_bridge, wgs->ai_child_mode &&
+                                     win_ai_parent_connection(wgs, NULL, NULL, NULL));
+                CheckMenuItem(wgs->popup_menus[SYSMENU].menu, IDM_AI_CHILD_MODE,
+                              MF_BYCOMMAND | (wgs->ai_child_mode ? MF_CHECKED : MF_UNCHECKED));
+                if (!wgs->ai_child_mode)
+                    win_ai_revoke_children(wgs);
+            }
             return 0;
         }
         if ((message == WM_COMMAND || message == WM_SYSCOMMAND) &&
-            ai_bridge_is_menu((UINT)(wParam & ~0xF))) {
-            ai_bridge_menu(&wgs->ai_bridge, hwnd, wgs->popup_menus[CTXMENU].menu,
-                           (UINT)(wParam & ~0xF), win_ai_send(wgs, NULL, 0), win_ai_send, wgs);
+            (wParam & ~0xF) == IDM_AI_OBSERVE) {
+            if (wgs->ai_child_window) {
+                wgs->ai_child_grant = false;
+                win_ai_disable(wgs);
+                win_ai_child_menu(wgs);
+                wgs->ai_title_state = 0;
+                sw_SetWindowText(hwnd, wgs->window_name);
+                return 0;
+            }
+            if (wgs->ai_bridge)
+                win_ai_disable(wgs);
+            else
+                ai_bridge_toggle_observation(&wgs->ai_bridge, hwnd,
+                    wgs->popup_menus[CTXMENU].menu, win_ai_send, wgs);
+            ai_bridge_dispatch(wgs->ai_bridge, hwnd, wgs->popup_menus[CTXMENU].menu);
             wgs->ai_title_state = ai_bridge_access_state(wgs->ai_bridge);
             sw_SetWindowText(hwnd, wgs->window_name);
             return 0;
         }
-        if (message == WM_KEYDOWN || message == WM_SYSKEYDOWN || message == WM_CHAR ||
+        if (wgs->ai_child_window && (message == WM_COMMAND || message == WM_SYSCOMMAND)) {
+            UINT command = (UINT)(wParam & ~0xF);
+            if (command == IDM_SHOWLOG || command == IDM_NEWSESS || command == IDM_DUPSESS ||
+                command == IDM_RESTART || command == IDM_RECONF || command == IDM_SAVEDSESS ||
+                (command >= IDM_SPECIAL_MIN && command < IDM_SAVED_MAX))
+                return 0;
+        }
+#endif
+        if (
+#ifdef PUTTY_AI_BRIDGE
+            !ai_top_active(wgs->ai_top) &&
+#endif
+            (message == WM_KEYDOWN || message == WM_SYSKEYDOWN || message == WM_CHAR ||
             message == WM_IME_COMPOSITION || message == WM_IME_CHAR ||
             message == WM_LBUTTONDOWN || message == WM_RBUTTONDOWN || message == WM_MBUTTONDOWN ||
             message == WM_GOT_CLIPDATA ||
             ((message == WM_COMMAND || message == WM_SYSCOMMAND) &&
-             (wParam & ~0xF) == IDM_PASTE))
+             (wParam & ~0xF) == IDM_PASTE))) {
+#ifdef PUTTY_AI_BRIDGE
+            if (wgs->ai_child_window && wgs->ai_close_pending)
+                win_ai_cancel_child_close(wgs);
+#endif
             ai_bridge_human_input(wgs->ai_bridge);
+        }
     }
 
     switch (message) {
@@ -2298,6 +2894,14 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT message,
         return 0;
       }
       case WM_DESTROY:
+#ifdef PUTTY_AI_BRIDGE
+        if (wgs->ai_child_window) {
+            win_ai_child_detach(wgs);
+            show_mouseptr(wgs, true);
+            return 0;
+        }
+        win_ai_close_children(wgs);
+#endif
         win_ai_disable(wgs);
         show_mouseptr(wgs, true);
         PostQuitMessage(0);
@@ -2959,6 +3563,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT message,
         winselgui_response(message, wParam, lParam);
         return 0;
       case WM_SETFOCUS:
+#ifdef PUTTY_AI_BRIDGE
+        if (ai_top_focus(wgs->ai_top))
+            return 0;
+#endif
         term_set_focus(wgs->term, true);
         CreateCaret(hwnd, wgs->caretbm, wgs->font_width, wgs->font_height);
         ShowCaret(hwnd);
@@ -5827,8 +6435,7 @@ static bool get_monitor_info(WinGuiSeat *wgs, MONITORINFO *mi)
         HMONITOR mon;
         mon = p_MonitorFromWindow(wgs->term_hwnd, MONITOR_DEFAULTTONEAREST);
         mi->cbSize = sizeof(*mi);
-        p_GetMonitorInfoA(mon, mi);
-        return true;
+        return p_GetMonitorInfoA(mon, mi);
     }
 #endif
     return false;
@@ -5869,8 +6476,8 @@ static bool get_workingarea_rect(WinGuiSeat *wgs, RECT *ss)
         return true;
     }
 #endif
-    /* Fallback is the same as get_monitor_rect, which is good _enough_:
-     * if the window overlaps the taskbar, that's not too bad a failure. */
+    if (SystemParametersInfoW(SPI_GETWORKAREA, 0, ss, 0))
+        return true;
     return GetClientRect(GetDesktopWindow(), ss);
 }
 

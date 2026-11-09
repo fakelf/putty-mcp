@@ -23,6 +23,7 @@ struct ChannelVtable {
 
     size_t (*send)(Channel *, bool is_stderr, const void *buf, size_t len);
     void (*send_eof)(Channel *);
+    void (*remote_close)(Channel *); /* optional, before local disposal */
     void (*set_input_wanted)(Channel *, bool wanted);
 
     char *(*log_close_msg)(Channel *);

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal">
+  <Bundle Name="PuTTY MCP" Manufacturer="PuTTY MCP Project" Version="4.4.0"
+          UpgradeCode="{90F6B6C0-8604-42F4-A573-2F303B4DE72B}">
+    <BootstrapperApplication>
+      <bal:WixStandardBootstrapperApplication Theme="hyperlinkLicense"
+                                              LicenseUrl="" SuppressOptionsUI="yes" />
+    </BootstrapperApplication>
+    <Chain>
+      <MsiPackage SourceFile="$(var.MsiPath)" Compressed="yes" />
+    </Chain>
+  </Bundle>
+</Wix>

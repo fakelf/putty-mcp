@@ -47,7 +47,7 @@ pub fn current_sid() -> Result<String> {
     unsafe { sid_for_process(GetCurrentProcessId()) }
 }
 pub fn pipe_name() -> Result<String> {
-    Ok(format!(r"\\.\pipe\putty-ai-v2-{}", current_sid()?))
+    Ok(format!(r"\\.\pipe\putty-ai-v440-{}", current_sid()?))
 }
 pub fn peer_pid(pipe: &impl AsRawHandle, server: bool) -> Result<u32> {
     unsafe {

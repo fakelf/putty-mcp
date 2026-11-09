@@ -8,5 +8,6 @@
         transport: stdio
         command: 'C:\PuTTY-AI\putty-ai-mcp.exe'
         args: []
-        env: {}
+        env:
+          PUTTY_MCP_SOURCE: 'DeepSeek Harness'
         toolCallTimeoutMs: 10000

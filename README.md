@@ -1,65 +1,45 @@
-# PuTTY MCP
+# PuTTY MCP v4.4.0
 
-基于 PuTTY 0.85 的 Windows x64 MCP 集成，让 AI 在用户已登录的 PuTTY SSH 会话中读取输出、执行排障命令和部署脚本。
+基于 PuTTY 0.85 的 Windows x64 集成，让 AI 操作你已经连接并明确开启观察的 SSH 终端。使用入口见 [START_HERE.md](START_HERE.md)。
 
-用户继续手动连接服务器和完成认证。MCP 复用已授权的终端，不另建 SSH 连接，不向远端安装 Agent。项目独立于 Codex，也提供官方 DeepSeek Harness 的接入模板。
+下载 Windows x64 免安装包并完整解压。[putty-ai-v4.4.0-x64.zip](https://github.com/fakelf/putty-mcp/releases/download/v4.4.0/putty-ai-v4.4.0-x64.zip)
 
-## 下载与开始使用
+运行程序为 `putty.exe` 和 `putty-ai-mcp.exe`。MCP 宿主按本地 stdio 启动后者，启动参数留空。同一程序按需启动独立 Broker，多个 MCP 客户端和 PuTTY 窗口可以共用。PuTTY 与 MCP 可按任意顺序启动。
 
-从 [Releases](https://github.com/fakelf/putty-mcp/releases) 下载 `putty-ai-final-x64.zip`，完整解压后阅读 `START_HERE.md`。三个程序须保持同目录：
+PuTTY 默认逐条批准。审批展示客户端来源、连接编号、目标会话和完整脚本。用户可从左上角启用多窗口 **AUTO RUN**，在当前主窗口及其 AI 子终端直接执行支持的操作。AI 宿主的工具确认仍按自身配置执行。运行中的任务可以请求发送一次 Ctrl+C，按键发送与远端退出分开核对。
 
-- `putty.exe`：包含 Native Bridge 的 PuTTY。
-- `putty-ai-mcp.exe`：由 AI 宿主启动的本地 stdio MCP 服务。
-- `putty-ai-broker.exe`：由 MCP 服务按需启动的同用户会话 Broker。
+PuTTY 标题栏菜单可开启 AI 和切换普通或多子终端模式。`submit_command` 直接发送命令正文和 Enter，终端显示远端自身的回显。任务根据提示符判断是否完成，命令任务的退出码为空。v4.4.0 使用独立本机管道。升级时请同时换用两个 v4.4.0 程序并更新宿主配置。
 
-运行需要 Windows x64 和 Microsoft Visual C++ 2015–2022 x64 Runtime。宿主后端必须与 PuTTY 同机、同一 Windows 用户。没有 HTTP MCP 端点。
+`attach_terminal` 可附加到主窗口或子窗口已经打开的前台终端。AI 可以读取画面、发送单键或组合键、输入文本和执行括号粘贴。H3C 分页时可以发送一个空格翻页。`detach` 或用户在窗口输入会交回控制，原 SSH 连接继续运行。
 
-在解压目录验证协议连接：
+多子终端模式可在同一条已认证的 SSH 连接上打开最多四个子终端。每个子终端有自己的黑色窗口和会话 ID。新窗口优先放在与现有窗口重叠较少的位置，主窗口和已有子窗口保持原位。切回普通模式后主窗口恢复逐条批准，现有子窗口转为手动使用。
 
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\check-mcp.ps1
-```
+`top` 和 `vi` 在主 PuTTY 窗口的原终端区域显示，任务通道结束后自动恢复原 Shell 画面。vi 支持临时缓冲区，也可指定远端已有文件。导航、插入 UTF-8 文本、撤销、重做、保存和退出均可通过 MCP 请求。输出分页会保留敏感行的脱敏，任务退出结果和输出是否丢失分别报告。
 
-这一步不发送远端命令、不读取终端内容。随后用本包 PuTTY 连接服务器，在标题栏系统菜单开启 AI 观察；核对窗口中的会话编号后再让 AI 使用。
+- [Codex 注册和启动](docs/installation.md)
+- [QwenPaw 接入和连接自检](docs/qwenpaw.md)
+- [DeepSeek Harness 接入](docs/deepseek-harness.md)
+- [工具接口和调用顺序](docs/ai-integration.md)
+- [MCP 联调结果](docs/mcp-smoke-results.json)和[命令字节验证](docs/custom-shell-results.json)
+- [架构与 IPC](docs/architecture.md)
 
-## DeepSeek Harness
+## 构建
 
-在运行包解压目录生成当前路径的 Cordis overlay，再启动官方 `dsh`：
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\generate-client-config.ps1 -Format deepseek -OutputPath .\putty.cordis.yml
-dsh web --patch "$PWD\putty.cordis.yml"
-```
-
-将 `FEED_TO_DEEPSEEK.txt` 的目录占位符替换成实际解压路径，再把全文交给 AI。详细步骤和官方依据见 [DeepSeek Harness 接入文档](docs/deepseek-harness.md)。本地 MCP 和真实 SSH 执行已验证，Harness 尚未端到端联调。
-
-## 工具与授权
-
-提供 `list_sessions`、`read_terminal`、`acquire_control`、`submit_command`、`get_task_status`、`cancel_task`、`release_control` 七个工具。
-
-默认不观察终端。用户开启观察后，只捕获之后的新输出。执行任意 Shell 命令需要单独批准 `custom` 控制模式，并在 PuTTY 本地逐条批准完整脚本。任务异步返回 task_id，通过增量轮询取得结果；超时、断线或未知结果不能自动重试。
-
-每次脚本最多 2048 UTF-8 字节；不提供交互按键或密码/MFA 自动输入。终端保留 printf/eval 包装及随机 PAI 完成标记回显。输出是 transcript，非屏幕快照；丢失范围会显式报告。取消不保证停止已发到远端的进程。
-
-- [安装与使用入口](START_HERE.md)
-- [完整接口与调用顺序](docs/ai-integration.md)
-- [机器可读工具 Schema](docs/mcp-tools.json)
-- [架构](docs/architecture.md)
-- [验证报告](docs/test-report.md) / [真实 SSH 测试范围](docs/live-validation.md)
-- [限制](docs/known-limitations.md)
-
-## 从源码构建
-
-需要 Windows x64、Visual Studio 2022 C++ 工具与 Windows SDK、CMake、Rust MSVC 工具链。测试还需要 Node.js，Shell 引号测试需要 Git Bash。请在隔离环境运行完整测试，避免已有生产 Broker 或 SSH 会话参与故障注入测试。
+准备 Windows x64、Visual Studio 2022 C++ 工具、Windows SDK、CMake 和 Rust MSVC 工具链。测试需要 Node.js。安装 Git Bash 时也可验证直接发送的命令在本地 Shell 中的解释结果。
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build.ps1 -RunTests
 ```
 
-运行包及源码包生成于 `dist/`。源码主体在 `putty-0.85/`，Rust 工作区在 `putty-ai-rs/`。关闭原生集成可使用 CMake 参数 `-DPUTTY_AI_BRIDGE=OFF`。
+测试使用独立的 v4.4.0 Broker 和合成终端。运行隔离测试时应先退出自己启动的同版 Broker。发布脚本会生成运行包和源码包。
+
+运行程序构建后，可用 WiX 4.0.6 生成 MSI。
+
+```powershell
+dotnet tool install wix --version 4.0.6 --tool-path .\.build-tools\wix4 --allow-roll-forward
+.\scripts\build-installer.ps1 -WixPath .\.build-tools\wix4\wix.exe
+```
 
 ## 许可与来源
 
-本项目包含上游 PuTTY 0.85 源码及修改，并保留 [PuTTY 许可证](LICENCE)。Rust 依赖许可证见 [third-party-licenses.txt](docs/third-party-licenses.txt)。本项目不是 PuTTY 或 DeepSeek 的官方发行版。
-
-公开副本将测试报告中的开发机路径替换为示例路径；测试结果与程序二进制保持不变。不包含账号配置、认证凭据、实际终端记录或构建缓存。
+本项目基于 PuTTY 0.85，并保留 [PuTTY 许可证](LICENCE)。Rust 依赖许可及声明见 [third-party-licenses.txt](docs/third-party-licenses.txt)。

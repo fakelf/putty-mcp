@@ -10,6 +10,7 @@ struct PopupMenu {
     HMENU menu;
 };
 enum { SYSMENU, CTXMENU };             /* indices into popup_menus field */
+enum { AI_CHILD_LIMIT = 4 };
 
 #define FONT_NORMAL 0
 #define FONT_BOLD 1
@@ -79,6 +80,12 @@ struct WinGuiSeat {
     struct unicode_data ucsdata;
     bool session_closed;
     struct AiBridge *ai_bridge;
+    struct AiTop *ai_top;
+    WinGuiSeat *ai_parent;
+    WinGuiSeat *ai_children[AI_CHILD_LIMIT];
+    unsigned char ai_child_id[16];
+    unsigned char ai_close_id[16];
+    bool ai_child_window, ai_child_mode, ai_child_grant, ai_close_pending;
     bool ai_session_started;
     int ai_title_state;
     bool reconfiguring;

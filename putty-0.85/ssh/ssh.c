@@ -59,6 +59,8 @@ struct Ssh {
     int savedport;
     char *fullhostname;
     char *description;
+    char *authenticated_username;
+    bool direct_task_endpoint;
 
     bool fallback_cmd;
     int exitcode;
@@ -988,6 +990,12 @@ static char *ssh_init(const BackendVtable *vt, Seat *seat,
 
     ssh_hostport_setup(host, port, ssh->conf,
                        &ssh->savedhost, &ssh->savedport, &loghost);
+    ssh->direct_task_endpoint = !*loghost &&
+        conf_get_int(conf, CONF_proxy_type) == PROXY_NONE &&
+        !conf_get_bool(conf, CONF_ssh_simple) &&
+        !*conf_get_str(conf, CONF_ssh_nc_host) &&
+        !*conf_get_str_ambi(conf, CONF_remote_cmd, NULL) &&
+        !conf_get_bool(conf, CONF_ssh_subsys);
     ssh->description = default_description(vt, ssh->savedhost, ssh->savedport);
 
     random_ref(); /* do this now - may be needed by sharing setup code */
@@ -1038,6 +1046,7 @@ static void ssh_free(Backend *be)
 
     sfree(ssh->deferred_abort_message);
     sfree(ssh->description);
+    sfree(ssh->authenticated_username);
 
     delete_callbacks_for_context(ssh); /* likely to catch ic_out_raw */
 
@@ -1207,6 +1216,28 @@ static bool ssh_sendok(Backend *be)
 {
     Ssh *ssh = container_of(be, Ssh, backend);
     return ssh->cl && ssh_get_wants_user_input(ssh->cl);
+}
+
+void ssh_set_authenticated_username(Ssh *ssh, const char *username)
+{
+    sfree(ssh->authenticated_username);
+    ssh->authenticated_username = username ? dupstr(username) : NULL;
+}
+
+ConnectionLayer *ssh_task_connection(Backend *be, const char **host,
+                                    int *port, const char **user)
+{
+    if (!be || be->vt != &ssh_backend)
+        return NULL;
+    Ssh *ssh = container_of(be, Ssh, backend);
+    if (!ssh->s || !ssh->cl || ssh->version != 2 || ssh->bare_connection ||
+        !ssh->direct_task_endpoint || !ssh->authenticated_username ||
+        !ssh_sendok(be))
+        return NULL;
+    if (host) *host = ssh->savedhost;
+    if (port) *port = ssh->savedport;
+    if (user) *user = ssh->authenticated_username;
+    return ssh->cl;
 }
 
 void ssh_check_sendok(Ssh *ssh)
